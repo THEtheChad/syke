@@ -44,6 +44,7 @@ Both share one implementation of each utility's logic, so they behave the same.
 | [`Digest`](docs/digest.md) | Hashes data as it passes, optionally verifying an expected checksum | ✓ | ✓ |
 | [`fork`](docs/fork.md) | Splits a stream into branches that each get every chunk, with bounded memory | ✓ | ✓ |
 | [`peek`](docs/peek.md) | Reads the first bytes of a stream, then replays the whole stream | ✓ | ✓ |
+| [`concat`](docs/concat.md) | Emits several streams one after another, opening each when it's reached | ✓ | ✓ |
 
 ## Errors
 

@@ -10,3 +10,4 @@ export { Spool, SpoolLimitError, type SpoolOptions, type SpoolSource } from './s
 export type { StreamSource } from './shared/combinator/node.ts'
 export { fork, type ForkOptions } from './fork/node.ts'
 export { peek, type PeekResult } from './peek/node.ts'
+export { concat, type ConcatSource } from './concat/node.ts'
