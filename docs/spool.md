@@ -13,6 +13,8 @@ Reach for it when:
    a busy disk), and pausing the source long enough gets the connection dropped.
 2. **You have many slow pipelines in parallel** and don't want each one's backlog
    held in memory.
+3. **A database cursor would time out** behind a slow consumer. In
+   [object mode](#object-mode) the spool carries records rather than bytes.
 
 Memory stays bounded by the stream's high-water mark plus `chunkSize` (and
 `memoryThreshold`, if you set one), however far the consumer falls behind. Disk
@@ -68,19 +70,113 @@ await res.body
 
 | Option                  | Default                     | Description                                                                                                  |
 | ----------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `objectMode`            | `false`                     | Carry records instead of bytes. See [Object mode](#object-mode).                                             |
+| `codec`                 | `v8Codec`                   | Object mode only: how records are written to and read back from disk.                                        |
 | `dir`                   | `os.tmpdir()`               | Directory for the spool file.                                                                                |
-| `chunkSize`             | readable high-water mark    | Largest chunk, in bytes, read back from disk and pushed downstream.                                          |
-| `memoryThreshold`       | `0`                         | Bytes to hold in memory before spooling to disk. Small bursts under this size never touch disk.             |
+| `chunkSize`             | readable high-water mark (64 KiB in object mode) | Largest chunk, in bytes, read back from disk and pushed downstream.                     |
+| `memoryThreshold`       | `0`                         | Bytes (records, in object mode) to hold in memory before spooling to disk. Small bursts under this size never touch disk. |
 | `minFreeSpace`          | `'10%'`                     | Free space to leave on `dir`'s filesystem: a percentage (`'10%'`), bytes, or `false` for no floor.           |
 | `maxDiskBytes`          | no cap                      | Largest size the spool file may reach, in bytes.                                                             |
 | `onLimit`               | `'backpressure'`            | What happens at a disk limit: `'backpressure'` pauses the source, `'error'` fails the stream.               |
 | `highWaterMark`, `readableHighWaterMark`, `writableHighWaterMark`, `signal` | Node defaults | Passed through to `stream.Duplex`. Aborting `signal` destroys the stream and removes the file. |
 
-The stream is byte-oriented: strings are written as UTF-8 buffers, and object
-mode isn't supported.
+By default the stream is byte-oriented: strings are written as UTF-8 buffers.
+Pass `objectMode: true` to carry records instead.
 
 `spool.filepath` holds the spool file's path once the stream first spills to disk
 (it's `null` until then).
+
+## Object mode
+
+`new Spool({ objectMode: true })` carries records (any JavaScript value except
+`null`) instead of bytes, for sources such as database cursors, which can time
+out behind a slow consumer just like a network connection:
+
+```js
+import { pipeline } from 'node:stream/promises'
+import { Spool } from 'syke/node'
+
+await pipeline(db.collection('events').find().stream(), new Spool({ objectMode: true }), slowWriter)
+
+// Or wrap the cursor directly; any iterable or async iterable of records works.
+Spool.from(cursor, { objectMode: true }).pipe(slowWriter)
+```
+
+Records only pay for serialization when they actually spill:
+
+- A record the consumer is ready for is handed through as the same object.
+- A record held in memory (under `memoryThreshold`) also stays as it is.
+- Only a record that spills to disk is encoded by the `codec`, written with a
+  length prefix, and decoded when it's read back. What comes out is a copy, so
+  mutating a record after writing it affects it only if it didn't spill.
+
+Order is preserved across all three paths, exactly as in byte mode.
+
+### Codecs
+
+A codec is any `{ encode(value): Uint8Array, decode(bytes): value }`. It must
+round-trip every record the stream carries. Otherwise a record comes out
+differently depending on whether it happened to spill.
+
+- **`v8Codec`** (the default) uses `v8.serialize()`, the structured-clone format.
+  It keeps Dates, Maps, Sets, typed arrays, Buffers, `RegExp`s, BigInts,
+  `undefined` and circular references. Class instances come back as plain
+  objects, and functions and symbols can't be encoded at all.
+- **`jsonCodec`** is JSON over UTF-8. It's smaller for plain data, but Dates
+  come back as strings, and `undefined` and functions are lost.
+- Bring your own for compact or schema-based formats:
+
+```js
+import { pack, unpack } from 'msgpackr'
+import { Spool, jsonCodec } from 'syke/node'
+
+new Spool({ objectMode: true, codec: jsonCodec })
+new Spool({ objectMode: true, codec: { encode: pack, decode: unpack } })
+```
+
+If a codec throws, `encode()` doesn't return a `Uint8Array`, or `decode()`
+returns `null`, the stream fails with a `SpoolCodecError`
+(`code: 'ERR_SYKE_SPOOL_CODEC'`), with the codec's own error as `cause`.
+An encode error surfaces when the record spills, which may be long after the
+codec would have been happy with every earlier record.
+
+### Options in object mode
+
+- **`highWaterMark`** follows Node's object-mode semantics: it counts records,
+  and defaults to 16.
+- **`memoryThreshold`** counts records, not bytes. Measuring bytes would mean
+  encoding every record, which is the cost object mode avoids.
+- **`chunkSize`** is still in bytes (default 64 KiB). It sizes reads from disk,
+  and records that queue up while a spill is in flight are encoded and written
+  together in batches of about this size. A record larger than `chunkSize` works.
+  It's read back over several reads and reassembled before it's decoded.
+- **`maxDiskBytes`** and **`minFreeSpace`** are in bytes of encoded data,
+  including a 4-byte length prefix per record. A record larger than
+  `maxDiskBytes` still gets through: it's written in pieces as the consumer
+  reads the earlier ones.
+
+Memory stays bounded by the high-water marks and `memoryThreshold` (in records),
+plus about one `chunkSize` of records being encoded for disk and one being
+decoded from it, plus the largest single record when one is bigger than
+`chunkSize`.
+
+### `null`
+
+Node object-mode streams use `null` to mean "end of stream", so a spool can't
+carry it. Writing `null` throws `ERR_STREAM_NULL_VALUES` (from Node itself), and
+a `Spool.from()` source that yields `null` fails the stream with the same code.
+Data is never silently dropped. Wrap nullable values (`{ value: null }`) or map
+`null` to `undefined` if you need to carry them.
+
+### Fast sources
+
+The zero-serialization path depends on the consumer keeping up. A record can
+only skip the disk when nothing older is still on it, so once a backlog has
+spilled, newer records follow it through disk until it drains. A source that
+produces records synchronously and faster than the disk can absorb them, such as
+`Spool.from(hugeArray)`, can keep the spool on the disk path for the whole
+stream. Real cursors deliver records in batches with I/O between them, which
+gives the backlog room to drain.
 
 ## Disk limits
 
@@ -143,7 +239,7 @@ that way are named `syke-spool-*` in the spool directory.
 ## How it works
 
 - If the consumer is waiting and nothing is queued, a chunk is handed straight
-  through without touching disk.
+  through without touching disk (or, in object mode, the codec).
 - Otherwise it goes to memory (up to `memoryThreshold`) or is appended to the
   spool file. Order is always preserved.
 - The spool file is created lazily with mode `0600`, so a stream that never falls
