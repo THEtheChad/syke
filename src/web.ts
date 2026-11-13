@@ -7,3 +7,4 @@ export { LengthCheckError, type LengthCheckOptions } from './lengthCheck/core.ts
 export { LengthCheck } from './lengthCheck/web.ts'
 export type { StreamSource } from './shared/combinator/web.ts'
 export { fork, type ForkOptions } from './fork/web.ts'
+export { peek, type PeekResult } from './peek/web.ts'
