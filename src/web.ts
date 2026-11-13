@@ -16,3 +16,5 @@ export {
   type NdjsonStringifyOptions,
 } from './ndjson/core.ts'
 export { NdjsonParse, NdjsonStringify } from './ndjson/web.ts'
+export type { BatchOptions } from './batch/core.ts'
+export { Batch } from './batch/web.ts'

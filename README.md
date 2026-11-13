@@ -45,6 +45,7 @@ Both share one implementation of each utility's logic, so they behave the same.
 | [`Lines`](docs/lines.md) | Decodes bytes and emits one string per line | ✓ | ✓ |
 | [`NdjsonParse`](docs/ndjson.md) | Parses newline-delimited JSON into values | ✓ | ✓ |
 | [`NdjsonStringify`](docs/ndjson.md#ndjsonstringify) | Serialises values as newline-delimited JSON | ✓ | ✓ |
+| [`Batch`](docs/batch.md) | Groups records into arrays for bulk inserts, with an optional time limit | ✓ | ✓ |
 
 ## Errors
 
