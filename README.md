@@ -44,6 +44,7 @@ Both share one implementation of each utility's logic, so they behave the same.
 | [`Digest`](docs/digest.md) | Hashes data as it passes, optionally verifying an expected checksum | ✓ | ✓ |
 | [`Cap`](docs/cap.md) | Limits a stream to its first N bytes or records, failing or truncating past that | ✓ | ✓ |
 | [`Rechunk`](docs/rechunk.md) | Re-cuts a byte stream into chunks of exactly N bytes | ✓ | ✓ |
+| [`Meter`](docs/meter.md) | Counts bytes and chunks as they pass, with throttled progress callbacks | ✓ | ✓ |
 
 ## Errors
 
