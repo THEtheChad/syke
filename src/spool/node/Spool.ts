@@ -13,6 +13,7 @@ import {
 } from './diskSpace.ts'
 import { SykeError } from '../../shared/errors.ts'
 import { nonNegativeInt, positiveInt } from '../../shared/validate.ts'
+import { ExtentMap, type Region } from '../core/extents.ts'
 import { releaseFile, trackFile } from './fileRegistry.ts'
 
 export interface SpoolOptions
@@ -61,18 +62,6 @@ export class SpoolLimitError extends SykeError {
   override name = 'SpoolLimitError'
 }
 
-/** A run of unread bytes in the spool file: [start, end). */
-interface Extent {
-  start: number
-  end: number
-}
-
-/** Where the next write goes. */
-interface WriteTarget {
-  position: number
-  length: number
-}
-
 /** How often to recheck free space while waiting on `minFreeSpace`. */
 const FREE_SPACE_POLL_MS = 250
 
@@ -94,11 +83,8 @@ export class Spool extends Duplex {
   readonly #onLimit: 'backpressure' | 'error'
 
   #file: Promise<FileHandle> | null = null
-  #fileSize = 0
-  // Unread bytes in stream order. Reads take from the first extent; writes
-  // extend the last one or start a new one in free space, so space the reader
-  // has finished with is reused before the file grows.
-  #extents: Extent[] = []
+  // Unread bytes on disk, in stream order, and where new bytes go.
+  readonly #extents: ExtentMap
   #reading = false
   #writing = false
   #wakeWriter: (() => void) | null = null
@@ -152,6 +138,7 @@ export class Spool extends Duplex {
       )
     }
     this.#onLimit = onLimit ?? 'backpressure'
+    this.#extents = new ExtentMap(this.#chunkSize, this.#maxDiskBytes)
   }
 
   override _write(
@@ -206,7 +193,7 @@ export class Spool extends Duplex {
 
   /** No unread bytes on disk and no write in flight. */
   #diskEmpty() {
-    return this.#extents.length === 0 && !this.#writing
+    return this.#extents.empty && !this.#writing
   }
 
   async #spill(chunk: Buffer) {
@@ -216,15 +203,15 @@ export class Spool extends Duplex {
 
       // Prefer space inside the file; only ask the filesystem when it must grow.
       let budget = 0
-      let target = this.#place(rest.length, 0, false)
-      if (!target && this.#fileSize < this.#maxDiskBytes) {
+      let target = this.#extents.place(rest.length, 0, false)
+      if (!target && !this.#extents.atMaxSize) {
         budget = this.#floor ? await freeSpaceBudget(this.#dir, this.#floor) : Number.POSITIVE_INFINITY
         // State may have changed during the await, so place again from scratch.
         // Everything from here to `#writing = true` is synchronous.
-        target = this.#place(rest.length, budget, false)
+        target = this.#extents.place(rest.length, budget, false)
       }
       // At a limit, any free gap will do, however small.
-      target ??= this.#place(rest.length, budget, true)
+      target ??= this.#extents.place(rest.length, budget, true)
 
       if (!target) {
         // At a limit with nothing queued and the consumer waiting: hand it over.
@@ -252,51 +239,14 @@ export class Spool extends Duplex {
         this.#writing = false
       }
 
-      const end = target.position + piece.length
-      const tail = this.#extents.at(-1)
-      // The tail may have been fully read (and dropped) during the write.
-      if (tail && tail.end === target.position) tail.end = end
-      else this.#extents.push({ start: target.position, end })
-      this.#fileSize = Math.max(this.#fileSize, end)
+      this.#extents.wrote(target.position, piece.length)
       rest = rest.subarray(piece.length)
       this.#flush()
     }
   }
 
-  /**
-   * Finds space for up to `want` bytes: right after the last extent if
-   * possible, otherwise the first free gap. The file may grow by `growth`
-   * bytes (capped by `maxDiskBytes`). Unless `anySize`, gaps smaller than
-   * `chunkSize` are skipped to avoid fragmenting the file.
-   */
-  #place(want: number, growth: number, anySize: boolean): WriteTarget | null {
-    const limit = Math.min(this.#maxDiskBytes, this.#fileSize + Math.max(0, growth))
-    const tail = this.#extents.at(-1)
-    const minGap = anySize ? 1 : Math.min(want, this.#chunkSize)
-
-    let first: WriteTarget | null = null
-    for (const gap of this.#gaps(limit)) {
-      const length = Math.min(want, gap.end - gap.start)
-      if (tail && gap.start === tail.end) return { position: gap.start, length }
-      if (!first && gap.end - gap.start >= minGap) first = { position: gap.start, length }
-    }
-    return first
-  }
-
-  /** Free space in [0, limit), in file order. */
-  #gaps(limit: number) {
-    const gaps: Extent[] = []
-    let cursor = 0
-    for (const extent of [...this.#extents].sort((a, b) => a.start - b.start)) {
-      if (extent.start > cursor) gaps.push({ start: cursor, end: Math.min(extent.start, limit) })
-      cursor = Math.max(cursor, extent.end)
-    }
-    if (limit > cursor) gaps.push({ start: cursor, end: limit })
-    return gaps.filter((gap) => gap.end > gap.start)
-  }
-
   #limitMessage(budget: number) {
-    if (this.#fileSize + Math.max(0, budget) >= this.#maxDiskBytes) {
+    if (this.#extents.wouldReachMax(budget)) {
       return `syke: spool file reached maxDiskBytes (${this.#maxDiskBytes} bytes)`
     }
     return `syke: spilling more would take free space on ${this.#dir} below minFreeSpace`
@@ -343,7 +293,7 @@ export class Spool extends Duplex {
 
     if (this.#memory.length > 0) return
 
-    if (this.#extents.length > 0) {
+    if (!this.#extents.empty) {
       if (this.#wantsData) this.#readFromDisk()
       return
     }
@@ -356,9 +306,7 @@ export class Spool extends Duplex {
 
   #readFromDisk() {
     this.#reading = true
-    const head = this.#extents[0] as Extent
-    const length = Math.min(this.#chunkSize, head.end - head.start)
-    const position = head.start
+    const { position, length } = this.#extents.nextRead() as Region
     const read = this.#track(
       this.#openFile().then((file) => file.read(Buffer.allocUnsafe(length), 0, length, position)),
     )
@@ -372,8 +320,7 @@ export class Spool extends Duplex {
           return
         }
 
-        head.start += bytesRead
-        if (head.start === head.end) this.#extents.shift()
+        this.#extents.read(bytesRead)
         this.#wantsData = this.push(bytesRead < length ? buffer.subarray(0, bytesRead) : buffer)
         this.#flush()
       },
