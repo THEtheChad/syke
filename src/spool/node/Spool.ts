@@ -11,9 +11,9 @@ import {
   parseMinFreeSpace,
   warnIfMemoryBacked,
 } from './diskSpace.ts'
-import { SykeError } from '../../shared/errors.ts'
 import { nonNegativeInt, positiveInt } from '../../shared/validate.ts'
 import { ExtentMap, type Region } from '../core/extents.ts'
+import { SpoolLimitError } from '../core/limits.ts'
 import { releaseFile, trackFile } from './fileRegistry.ts'
 
 export interface SpoolOptions
@@ -56,11 +56,7 @@ export type SpoolSource =
   | Iterable<Buffer | Uint8Array | string>
   | AsyncIterable<Buffer | Uint8Array | string>
 
-/** The stream hit `maxDiskBytes` or `minFreeSpace` with `onLimit: 'error'`. */
-export class SpoolLimitError extends SykeError {
-  override readonly code: 'ERR_SYKE_SPOOL_LIMIT' = 'ERR_SYKE_SPOOL_LIMIT'
-  override name = 'SpoolLimitError'
-}
+export { SpoolLimitError }
 
 /** How often to recheck free space while waiting on `minFreeSpace`. */
 const FREE_SPACE_POLL_MS = 250
