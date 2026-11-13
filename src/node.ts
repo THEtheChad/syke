@@ -9,3 +9,12 @@ export type { MinFreeSpace } from './spool/node/diskSpace.ts'
 export { Spool, SpoolLimitError, type SpoolOptions, type SpoolSource } from './spool/node/Spool.ts'
 export { LineTooLongError, type LinesOptions } from './lines/core.ts'
 export { Lines } from './lines/node.ts'
+export {
+  type JsonReplacer,
+  type JsonReviver,
+  NdjsonParseError,
+  type NdjsonParseOptions,
+  NdjsonStringifyError,
+  type NdjsonStringifyOptions,
+} from './ndjson/core.ts'
+export { NdjsonParse, NdjsonStringify } from './ndjson/node.ts'

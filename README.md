@@ -43,6 +43,8 @@ Both share one implementation of each utility's logic, so they behave the same.
 | [`LengthCheck`](docs/length-check.md) | Fails the stream if it's longer or shorter than expected | ✓ | ✓ |
 | [`Digest`](docs/digest.md) | Hashes data as it passes, optionally verifying an expected checksum | ✓ | ✓ |
 | [`Lines`](docs/lines.md) | Decodes bytes and emits one string per line | ✓ | ✓ |
+| [`NdjsonParse`](docs/ndjson.md) | Parses newline-delimited JSON into values | ✓ | ✓ |
+| [`NdjsonStringify`](docs/ndjson.md#ndjsonstringify) | Serialises values as newline-delimited JSON | ✓ | ✓ |
 
 ## Errors
 

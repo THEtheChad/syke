@@ -7,3 +7,12 @@ export { LengthCheckError, type LengthCheckOptions } from './lengthCheck/core.ts
 export { LengthCheck } from './lengthCheck/web.ts'
 export { LineTooLongError, type LinesOptions } from './lines/core.ts'
 export { Lines } from './lines/web.ts'
+export {
+  type JsonReplacer,
+  type JsonReviver,
+  NdjsonParseError,
+  type NdjsonParseOptions,
+  NdjsonStringifyError,
+  type NdjsonStringifyOptions,
+} from './ndjson/core.ts'
+export { NdjsonParse, NdjsonStringify } from './ndjson/web.ts'
