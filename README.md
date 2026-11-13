@@ -26,7 +26,11 @@ syke comes in two flavours with the same utility names and options:
   a Node.js API.
 
 ```js
-import { Spool } from 'syke/node'
+import { LengthCheck } from 'syke/node'
+await pipeline(res, new LengthCheck({ expected: size }), file)
+
+import { LengthCheck } from 'syke/web'
+await res.body.pipeThrough(new LengthCheck({ expected: size })).pipeTo(file)
 ```
 
 Both share one implementation of each utility's logic, so they behave the same.
@@ -36,11 +40,12 @@ Both share one implementation of each utility's logic, so they behave the same.
 | Utility | What it does | `syke/node` | `syke/web` |
 | ------- | ------------ | :---------: | :--------: |
 | [`Spool`](docs/spool.md) | A pass-through that spills to disk instead of applying backpressure to its source | ✓ | |
+| [`LengthCheck`](docs/length-check.md) | Fails the stream if it's longer or shorter than expected | ✓ | ✓ |
 
 ## Errors
 
 Every error syke raises on purpose extends `SykeError` and has a stable
-`code`, such as `ERR_SYKE_SPOOL_LIMIT`, so you can branch on `error.code` without
+`code`, such as `ERR_SYKE_LENGTH`, so you can branch on `error.code` without
 importing the class. Each utility's page lists its codes. Invalid options
 throw a plain `TypeError` or `RangeError` from the constructor. Messages start
 with `syke:`.
