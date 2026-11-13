@@ -20,3 +20,5 @@ export {
 export { NdjsonParse, NdjsonStringify } from './ndjson/node.ts'
 export type { BatchOptions } from './batch/core.ts'
 export { Batch } from './batch/node.ts'
+export type { ParallelMapContext, ParallelMapFn, ParallelMapOptions } from './parallelMap/core.ts'
+export { ParallelMap } from './parallelMap/node.ts'

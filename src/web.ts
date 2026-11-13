@@ -18,3 +18,5 @@ export {
 export { NdjsonParse, NdjsonStringify } from './ndjson/web.ts'
 export type { BatchOptions } from './batch/core.ts'
 export { Batch } from './batch/web.ts'
+export type { ParallelMapContext, ParallelMapFn, ParallelMapOptions } from './parallelMap/core.ts'
+export { ParallelMap } from './parallelMap/web.ts'
