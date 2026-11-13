@@ -41,6 +41,7 @@ Both share one implementation of each utility's logic, so they behave the same.
 | ------- | ------------ | :---------: | :--------: |
 | [`Spool`](docs/spool.md) | A pass-through that spills to disk instead of applying backpressure to its source | ✓ | |
 | [`LengthCheck`](docs/length-check.md) | Fails the stream if it's longer or shorter than expected | ✓ | ✓ |
+| [`Digest`](docs/digest.md) | Hashes data as it passes, optionally verifying an expected checksum | ✓ | ✓ |
 
 ## Errors
 

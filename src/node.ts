@@ -1,5 +1,8 @@
 // syke/node: utilities built on Node.js streams.
 export { SykeError } from './shared/errors.ts'
+export type { Hasher, DigestEncoding } from './digest/core.ts'
+export { DigestError } from './digest/core.ts'
+export { Digest, type DigestOptions } from './digest/node.ts'
 export { LengthCheckError, type LengthCheckOptions } from './lengthCheck/core.ts'
 export { LengthCheck } from './lengthCheck/node.ts'
 export type { MinFreeSpace } from './spool/node/diskSpace.ts'
