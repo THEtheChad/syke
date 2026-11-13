@@ -7,3 +7,18 @@ export { LengthCheckError, type LengthCheckOptions } from './lengthCheck/core.ts
 export { LengthCheck } from './lengthCheck/node.ts'
 export type { MinFreeSpace } from './spool/node/diskSpace.ts'
 export { Spool, SpoolLimitError, type SpoolOptions, type SpoolSource } from './spool/node/Spool.ts'
+export { LineTooLongError, type LinesOptions } from './lines/core.ts'
+export { Lines } from './lines/node.ts'
+export {
+  type JsonReplacer,
+  type JsonReviver,
+  NdjsonParseError,
+  type NdjsonParseOptions,
+  NdjsonStringifyError,
+  type NdjsonStringifyOptions,
+} from './ndjson/core.ts'
+export { NdjsonParse, NdjsonStringify } from './ndjson/node.ts'
+export type { BatchOptions } from './batch/core.ts'
+export { Batch } from './batch/node.ts'
+export type { ParallelMapContext, ParallelMapFn, ParallelMapOptions } from './parallelMap/core.ts'
+export { ParallelMap } from './parallelMap/node.ts'
