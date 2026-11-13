@@ -7,3 +7,5 @@ export { LengthCheckError, type LengthCheckOptions } from './lengthCheck/core.ts
 export { LengthCheck } from './lengthCheck/web.ts'
 export { CapError, type CapLimitAction, type CapOptions } from './cap/core.ts'
 export { Cap } from './cap/web.ts'
+export type { RechunkOptions } from './rechunk/core.ts'
+export { Rechunk } from './rechunk/web.ts'
