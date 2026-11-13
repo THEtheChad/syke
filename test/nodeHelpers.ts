@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable, Writable } from 'node:stream'
 import { afterEach, beforeEach } from 'vitest'
-import type { Spool } from '../src/index.ts'
+import type { Spool } from '../src/node.ts'
 
 /** A fresh temp directory per test; read `.path` inside the test. */
 export function useTempDir(): { readonly path: string } {
@@ -97,7 +97,7 @@ export function fileSize(spool: Spool): number {
   }
 }
 
-/** Samples the cache file's size every millisecond; `stop()` returns the largest seen. */
+/** Samples the spool file's size every millisecond; `stop()` returns the largest seen. */
 export function watchFileSize(spool: Spool): { stop(): number } {
   let peak = 0
   const timer = setInterval(() => {

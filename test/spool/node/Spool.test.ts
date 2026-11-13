@@ -7,8 +7,8 @@ import { pathToFileURL } from 'node:url'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { describe, expect, it } from 'vitest'
-import { Spool } from '../../src/index.ts'
-import { closed, sink, source, until, useTempDir, watchFileSize } from '../helpers.ts'
+import { Spool } from '../../../src/node.ts'
+import { closed, sink, source, until, useTempDir, watchFileSize } from '../../nodeHelpers.ts'
 
 const tmp = useTempDir()
 
@@ -46,7 +46,7 @@ describe('Spool', () => {
     expect(peakBuffered).toBeLessThanOrEqual(spool.readableHighWaterMark + chunkSize)
   })
 
-  it('removes the cache file once the stream finishes', async () => {
+  it('removes the spool file once the stream finishes', async () => {
     const spool = new Spool({ dir: tmp.path })
     const out = sink()
     out.pause()
@@ -62,7 +62,7 @@ describe('Spool', () => {
     expect(await readdir(tmp.path)).toEqual([])
   })
 
-  it('removes the cache file when the source errors', async () => {
+  it('removes the spool file when the source errors', async () => {
     const spool = new Spool({ dir: tmp.path })
     const out = sink()
     out.pause()
@@ -80,7 +80,7 @@ describe('Spool', () => {
     expect(await readdir(tmp.path)).toEqual([])
   })
 
-  it('removes the cache file when aborted', async () => {
+  it('removes the spool file when aborted', async () => {
     const controller = new AbortController()
     const spool = new Spool({ dir: tmp.path, signal: controller.signal })
     const out = sink()
@@ -95,7 +95,7 @@ describe('Spool', () => {
     expect(await readdir(tmp.path)).toEqual([])
   })
 
-  it('reports cache write errors instead of hanging', async () => {
+  it('reports spool write errors instead of hanging', async () => {
     const spool = new Spool({ dir: join(tmp.path, 'missing') })
     const out = sink()
     out.pause()
@@ -143,7 +143,7 @@ describe('Spool', () => {
     expect(out.received.equals(data)).toBe(true)
   })
 
-  it('reuses cache file space once the backlog drains', async () => {
+  it('reuses spool file space once the backlog drains', async () => {
     const backlog = 2 * 1024 * 1024
     const data = randomBytes(backlog * 3)
     const spool = new Spool({ dir: tmp.path })
@@ -212,8 +212,8 @@ describe('Spool', () => {
     expect(size.stop()).toBeLessThan(4 * MiB)
   })
 
-  it('removes the cache file if the process exits mid-stream', () => {
-    const entry = pathToFileURL(join(import.meta.dirname, '../../src/index.ts')).href
+  it('removes the spool file if the process exits mid-stream', () => {
+    const entry = pathToFileURL(join(import.meta.dirname, '../../../src/node.ts')).href
     const child = `
       import { statSync } from 'node:fs'
       import { Readable, Writable } from 'node:stream'
@@ -244,7 +244,7 @@ describe('Spool', () => {
   })
 
   it('removes the spool file when an abandoned spool is garbage-collected', () => {
-    const entry = pathToFileURL(join(import.meta.dirname, '../../src/index.ts')).href
+    const entry = pathToFileURL(join(import.meta.dirname, '../../../src/node.ts')).href
     const child = `
       import { existsSync } from 'node:fs'
       import { Readable } from 'node:stream'
@@ -281,7 +281,7 @@ describe('Spool', () => {
     expect(result.exists).toBe(false)
   })
 
-  it('creates the cache file readable only by the owner', async () => {
+  it('creates the spool file readable only by the owner', async () => {
     if (process.platform === 'win32') return
     const spool = new Spool({ dir: tmp.path })
     const out = sink()

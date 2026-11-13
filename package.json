@@ -1,16 +1,19 @@
 {
   "name": "syke",
   "version": "0.1.0",
-  "description": "Stream utilities for memory-bound work in Node.js. Spool: a pass-through that spills to disk instead of applying backpressure to its source.",
+  "description": "Stream utilities for memory-bound work, for Node.js streams (syke/node) and Web Streams (syke/web).",
   "keywords": [
     "stream",
     "streams",
+    "web streams",
     "backpressure",
     "spool",
-    "disk buffer",
     "spill to disk",
-    "temp file",
+    "checksum",
+    "digest",
+    "length",
     "duplex",
+    "transform",
     "memory"
   ],
   "author": "Chad Elliott <chad.d.elliott@gmail.com>",
@@ -23,31 +26,28 @@
   },
   "type": "module",
   "exports": {
-    ".": {
+    "./node": {
       "import": {
-        "types": "./dist/index.d.mts",
-        "default": "./dist/index.mjs"
+        "types": "./dist/node.d.mts",
+        "default": "./dist/node.mjs"
       },
       "require": {
-        "types": "./dist/index.d.cts",
-        "default": "./dist/index.cjs"
+        "types": "./dist/node.d.cts",
+        "default": "./dist/node.cjs"
       }
     },
-    "./spool": {
+    "./web": {
       "import": {
-        "types": "./dist/spool.d.mts",
-        "default": "./dist/spool.mjs"
+        "types": "./dist/web.d.mts",
+        "default": "./dist/web.mjs"
       },
       "require": {
-        "types": "./dist/spool.d.cts",
-        "default": "./dist/spool.cjs"
+        "types": "./dist/web.d.cts",
+        "default": "./dist/web.cjs"
       }
     },
     "./package.json": "./package.json"
   },
-  "main": "./dist/index.cjs",
-  "module": "./dist/index.mjs",
-  "types": "./dist/index.d.cts",
   "files": [
     "dist"
   ],
@@ -61,7 +61,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint:package": "publint && attw --pack . --profile node16",
+    "lint:package": "publint && attw --pack . --profile node16 && node scripts/check-web-bundle.mjs",
     "check": "pnpm typecheck && pnpm test && pnpm build && pnpm lint:package",
     "prepublishOnly": "pnpm check"
   },

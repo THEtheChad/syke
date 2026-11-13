@@ -3,13 +3,14 @@ import { readdir } from 'node:fs/promises'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { describe, expect, it } from 'vitest'
-import { Spool } from '../../src/index.ts'
-import { closed, sink, source, useTempDir } from '../helpers.ts'
+import { ReadableStream, WritableStream } from 'node:stream/web'
+import { Spool } from '../../../src/node.ts'
+import { closed, sink, source, useTempDir } from '../../nodeHelpers.ts'
 
 const tmp = useTempDir()
 
 describe('Spool.from()', () => {
-  it('returns an Spool, not the plain Duplex that Duplex.from() would', () => {
+  it('returns a Spool, not the plain Duplex that Duplex.from() would', () => {
     const spool = Spool.from([Buffer.from('x')], { dir: tmp.path })
     expect(spool).toBeInstanceOf(Spool)
     spool.destroy()

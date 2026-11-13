@@ -5,8 +5,8 @@ import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { Spool, SpoolLimitError } from '../../src/index.ts'
-import { closed, fileSize, sink, sleep, source, until, useTempDir, watchFileSize } from '../helpers.ts'
+import { Spool, SpoolLimitError } from '../../../src/node.ts'
+import { closed, fileSize, sink, sleep, source, until, useTempDir, watchFileSize } from '../../nodeHelpers.ts'
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>()
@@ -20,7 +20,7 @@ const TMPFS = 0x01021994
 
 /**
  * Fakes the filesystem under the test's temp dir: `free` bytes are available
- * before anything is written there, and shrink as the cache file grows.
+ * before anything is written there, and shrink as the spool file grows.
  */
 function fakeDisk({ total, free, type = EXT4 }: { total: number; free: number; type?: number }) {
   const disk = { free }
@@ -37,7 +37,7 @@ beforeEach(() => {
 })
 
 describe('maxDiskBytes', () => {
-  it('pauses the source once the cache file reaches the cap, then resumes', async () => {
+  it('pauses the source once the spool file reaches the cap, then resumes', async () => {
     const cap = 256 * 1024
     const data = randomBytes(2 * MiB)
     const spool = new Spool({ dir: tmp.path, maxDiskBytes: cap })
@@ -62,7 +62,7 @@ describe('maxDiskBytes', () => {
     expect(out.received.equals(data)).toBe(true)
   })
 
-  it('wraps around the cache file without reordering data', async () => {
+  it('wraps around the spool file without reordering data', async () => {
     const cap = 100_000
     const data = randomBytes(4 * MiB)
     const spool = new Spool({ dir: tmp.path, maxDiskBytes: cap, chunkSize: 9000 })
@@ -115,7 +115,7 @@ describe('maxDiskBytes', () => {
 })
 
 describe('minFreeSpace', () => {
-  it('stops growing the cache file at a byte floor', async () => {
+  it('stops growing the spool file at a byte floor', async () => {
     fakeDisk({ total: 100 * MiB, free: 10 * MiB })
     const data = randomBytes(2 * MiB)
     const spool = new Spool({ dir: tmp.path, minFreeSpace: 10 * MiB - 512 * 1024 })

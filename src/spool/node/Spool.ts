@@ -11,6 +11,8 @@ import {
   parseMinFreeSpace,
   warnIfMemoryBacked,
 } from './diskSpace.ts'
+import { SykeError } from '../../shared/errors.ts'
+import { nonNegativeInt, positiveInt } from '../../shared/validate.ts'
 import { releaseFile, trackFile } from './fileRegistry.ts'
 
 export interface SpoolOptions
@@ -41,12 +43,11 @@ export interface SpoolOptions
   /**
    * What to do when a disk limit is reached. `'backpressure'` (the default)
    * pauses the source until the consumer frees space; `'error'` fails the
-   * stream with an `SpoolLimitError`.
+   * stream with a `SpoolLimitError`.
    */
   onLimit?: 'backpressure' | 'error'
 }
 
-/** The stream hit `maxDiskBytes` or `minFreeSpace` with `onLimit: 'error'`. */
 /** Anything `Spool.from()` can read from. */
 export type SpoolSource =
   | NodeJS.ReadableStream
@@ -54,8 +55,9 @@ export type SpoolSource =
   | Iterable<Buffer | Uint8Array | string>
   | AsyncIterable<Buffer | Uint8Array | string>
 
-export class SpoolLimitError extends Error {
-  readonly code: 'ERR_SYKE_SPOOL_LIMIT' = 'ERR_SYKE_SPOOL_LIMIT'
+/** The stream hit `maxDiskBytes` or `minFreeSpace` with `onLimit: 'error'`. */
+export class SpoolLimitError extends SykeError {
+  override readonly code: 'ERR_SYKE_SPOOL_LIMIT' = 'ERR_SYKE_SPOOL_LIMIT'
   override name = 'SpoolLimitError'
 }
 
@@ -76,7 +78,7 @@ const FREE_SPACE_POLL_MS = 250
 
 /**
  * A pass-through stream that doesn't apply backpressure to its source.
- * Whatever the consumer is not ready for is cached in a temporary file and
+ * Whatever the consumer is not ready for is spooled to a temporary file and
  * read back, `chunkSize` bytes at a time, as the consumer drains. Disk use can
  * be capped with `maxDiskBytes` and `minFreeSpace`.
  */
@@ -412,18 +414,4 @@ function toNodeReadable(source: SpoolSource): NodeJS.ReadableStream {
     return Readable.fromWeb(source as ReadableStream)
   }
   return Readable.from(source as Iterable<unknown> | AsyncIterable<unknown>, { objectMode: false })
-}
-
-function positiveInt(name: string, value: number) {
-  if (!Number.isInteger(value) || value <= 0) {
-    throw new RangeError(`syke: ${name} must be a positive integer, got ${value}`)
-  }
-  return value
-}
-
-function nonNegativeInt(name: string, value: number) {
-  if (!Number.isInteger(value) || value < 0) {
-    throw new RangeError(`syke: ${name} must be a non-negative integer, got ${value}`)
-  }
-  return value
 }
