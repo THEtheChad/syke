@@ -7,3 +7,5 @@ export { LengthCheckError, type LengthCheckOptions } from './lengthCheck/core.ts
 export { LengthCheck } from './lengthCheck/node.ts'
 export type { MinFreeSpace } from './spool/node/diskSpace.ts'
 export { Spool, SpoolLimitError, type SpoolOptions, type SpoolSource } from './spool/node/Spool.ts'
+export { LineTooLongError, type LinesOptions } from './lines/core.ts'
+export { Lines } from './lines/node.ts'
