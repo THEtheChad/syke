@@ -47,6 +47,10 @@ Both share one implementation of each utility's logic, so they behave the same.
 | [`NdjsonStringify`](docs/ndjson.md#ndjsonstringify) | Serialises values as newline-delimited JSON | ✓ | ✓ |
 | [`Batch`](docs/batch.md) | Groups records into arrays for bulk inserts, with an optional time limit | ✓ | ✓ |
 | [`ParallelMap`](docs/parallel-map.md) | Maps records through an async function with bounded concurrency | ✓ | ✓ |
+| [`fork`](docs/fork.md) | Splits a stream into branches that each get every chunk, with bounded memory | ✓ | ✓ |
+| [`peek`](docs/peek.md) | Reads the first bytes of a stream, then replays the whole stream | ✓ | ✓ |
+| [`concat`](docs/concat.md) | Emits several streams one after another, opening each when it's reached | ✓ | ✓ |
+| [`merge`](docs/merge.md) | Interleaves several streams as their chunks arrive | ✓ | ✓ |
 
 ## Errors
 

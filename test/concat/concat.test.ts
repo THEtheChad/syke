@@ -1,0 +1,149 @@
+import { describe, expect, it } from 'vitest'
+import { concat as nodeConcat } from '../../src/node.ts'
+import { concat as webConcat } from '../../src/web.ts'
+import { pick, runtimes } from '../harness.ts'
+import { collect, collectSettled, generator, probe, reader, readUpTo, settle } from '../streamHarness.ts'
+
+describe.each(runtimes)('concat (%s)', (runtime) => {
+  const concat = pick(runtime, { node: nodeConcat, web: webConcat }) as (sources: unknown) => any
+
+  it('emits each source in turn, whatever its kind', async () => {
+    async function* later() {
+      yield 'g1'
+      yield 'g2'
+    }
+    const output = await collect(
+      concat([
+        probe(runtime, { length: 2, chunk: (i) => `s${i}` }).stream,
+        [{ object: true }, 7],
+        later(),
+        () => ['f1'],
+        async () => probe(runtime, { length: 1, chunk: () => 'p0' }).stream,
+      ]),
+    )
+    expect(output).toEqual(['s0', 's1', { object: true }, 7, 'g1', 'g2', 'f1', 'p0'])
+  })
+
+  it('takes an async iterable of sources', async () => {
+    async function* sources() {
+      yield ['a']
+      yield () => ['b']
+    }
+    expect(await collect(concat(sources()))).toEqual(['a', 'b'])
+  })
+
+  it('opens a factory only when its turn comes', async () => {
+    let opened = false
+    const first = probe(runtime, { length: 3 })
+    const r = reader(
+      concat([
+        first.stream,
+        () => {
+          opened = true
+          return ['next']
+        },
+      ]),
+    )
+    expect(await readUpTo(r, 2)).toEqual([0, 1])
+    expect(opened).toBe(false)
+    expect(await readUpTo(r, 10)).toEqual([2, 'next'])
+    expect(opened).toBe(true)
+  })
+
+  it('ends at once for no sources, and skips empty ones', async () => {
+    expect(await collect(concat([]))).toEqual([])
+    expect(await collect(concat([[], probe(runtime, { length: 0 }).stream, [1], []]))).toEqual([1])
+  })
+
+  it('reads no faster than the consumer', async () => {
+    const source = probe(runtime)
+    const r = reader(concat([source.stream]))
+    await readUpTo(r, 5)
+    await settle()
+    const pulls = source.pulls
+    await settle()
+    expect(source.pulls).toBe(pulls)
+    expect(pulls).toBeLessThan(40)
+    await r.cancel()
+  })
+
+  it('errors the output and cancels the open sources when one fails', async () => {
+    const error = new Error('second failed')
+    const third = probe(runtime)
+    let factoryCalled = false
+    const { output, error: caught } = await collectSettled(
+      concat([
+        [1],
+        probe(runtime, { length: 5, failAt: 1, error }).stream,
+        third.stream,
+        () => {
+          factoryCalled = true
+          return [9]
+        },
+      ]),
+    )
+    expect(caught).toBe(error)
+    expect(output[0]).toBe(1)
+    await settle()
+    expect(third.cancelled).toBe(true)
+    expect(factoryCalled).toBe(false)
+  })
+
+  it('errors the output when a waiting source fails', async () => {
+    const error = new Error('failed while waiting')
+    const waiting = probe(runtime, { failAt: 0, error })
+    const first = probe(runtime)
+    const r = reader(concat([first.stream, waiting.stream]))
+    // A stream starts pulling (and so fails) without being read.
+    if (runtime === 'node') waiting.stream.read(0)
+    await expect(readUpTo(r, 100)).rejects.toBe(error)
+    await settle()
+    expect(first.cancelled).toBe(true)
+  })
+
+  it('errors the output when a factory fails or returns no source', async () => {
+    const error = new Error('no source')
+    const { error: thrown } = await collectSettled(
+      concat([
+        [1],
+        () => {
+          throw error
+        },
+      ]),
+    )
+    expect(thrown).toBe(error)
+    const { error: invalid } = await collectSettled(concat([() => 42]))
+    expect(invalid).toBeInstanceOf(TypeError)
+  })
+
+  it('cancels the current source and the rest when the output is cancelled', async () => {
+    const current = probe(runtime)
+    const next = probe(runtime)
+    const sources = generator(() => ['never'])
+    const r = reader(concat([current.stream, next.stream]))
+    await readUpTo(r, 3)
+    await r.cancel()
+    await settle()
+    expect(current.cancelled).toBe(true)
+    expect(next.cancelled).toBe(true)
+
+    const lazy = reader(concat(sources))
+    await readUpTo(lazy, 3)
+    await lazy.cancel()
+    await settle()
+    expect(sources.returned).toBe(true)
+  })
+
+  it('rejects invalid sources', () => {
+    expect(() => concat(42)).toThrow(/syke: sources must be an iterable or async iterable/)
+    expect(() => concat([[1], 'text'])).toThrow(/wrap it in an array/)
+  })
+})
+
+describe('concat (node)', () => {
+  it('emits in object mode', async () => {
+    const output = nodeConcat([[Buffer.from('a')], ['b']])
+    expect(output.readableObjectMode).toBe(true)
+    expect(await collect(output)).toEqual([Buffer.from('a'), 'b'])
+  })
+})
