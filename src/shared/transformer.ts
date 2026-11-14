@@ -38,7 +38,15 @@ export interface Sink<O> {
   end(): void
   /** Fails the stream from outside `transform` or `flush` (a timer, say). */
   error(error: Error): void
-  /** True while downstream has all it asked for (backpressure is applied). */
+  /**
+   * True while downstream has all it asked for (backpressure is applied).
+   *
+   * On the web this reads the readable side's `desiredSize`. With the default
+   * readable high-water mark of 0 that is never positive, so `full` is always
+   * true and can't tell an idle consumer from a slow one. A transformer that
+   * relies on `full` must give its `CoreTransformStream` a readable strategy
+   * with `highWaterMark >= 1` (as `Watchdog` does).
+   */
   readonly full: boolean
 }
 
