@@ -4,31 +4,8 @@
 
 First release of `syke`: stream utilities for memory-bound work, in two
 flavours with the same names and options. `syke/node` builds on Node.js streams
-and `syke/web` on Web Streams (browsers, Deno, Bun and Node). `Spool` is the
-successor to the `stream-fs-proxy` package's `FSProxy`.
-
-### Changes from stream-fs-proxy 1.x
-
-- The package is `syke` and the class is `Spool`, a named export:
-  `import { Spool } from 'syke/node'` or `const { Spool } = require('syke/node')`. In
-  stream-fs-proxy 1.x the CommonJS build only exposed `FSProxy` as `.default`, so
-  the documented `require()` usage threw.
-- Requires Node.js 22 or later.
-- Object mode now works (it never did in 1.x); see `objectMode` below.
-
-### Fixed compared with stream-fs-proxy 1.x
-
-- Memory is bounded. 1.x read the entire on-disk backlog into one buffer when the
-  consumer resumed, so a 200 MB backlog became a single 200 MB chunk in memory.
-- The final chunk could be lost or fail with `stream.push() after EOF` when the
-  writable side finished while the reader was waiting for data.
-- The spool file is closed and deleted when the stream errors, is destroyed or
-  is aborted. 1.x left it in the temp directory, and never closed the file
-  descriptor even on success.
-- Write errors are passed to the stream instead of corrupting the write position.
-- Short reads no longer push zero-filled bytes.
-- File I/O no longer blocks the event loop.
-- The spool file is created with mode `0600`.
+and `syke/web` on Web Streams (browsers, Deno, Bun and Node). `syke/node`
+requires Node.js 22 or later.
 
 ### Added: Spool
 
@@ -135,7 +112,3 @@ Combining:
 
 Every deliberate error extends `SykeError` and has a stable `ERR_SYKE_*` code.
 ESM and CommonJS builds with TypeScript types and no runtime dependencies.
-
-## stream-fs-proxy 1.0.5
-
-Published to npm from code identical to 1.0.4; not tagged in git.

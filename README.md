@@ -90,17 +90,6 @@ importing the class. Each utility's page lists its codes. Invalid options
 throw a plain `TypeError` or `RangeError` from the constructor. Messages start
 with `syke:`.
 
-## Migrating from stream-fs-proxy
-
-`Spool` is the successor to the `stream-fs-proxy` package's `FSProxy`:
-
-| stream-fs-proxy 1.x | syke |
-| ------------------- | ---- |
-| `require('stream-fs-proxy').default` | `const { Spool } = require('syke/node')` |
-| `new FSProxy()` | `new Spool()` |
-
-See the [changelog](CHANGELOG.md) for the bugs fixed along the way.
-
 ## License
 
 MIT
