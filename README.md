@@ -46,6 +46,7 @@ Both share one implementation of each utility's logic, so they behave the same.
 | [`Rechunk`](docs/rechunk.md) | Re-cuts a byte stream into chunks of exactly N bytes | ✓ | ✓ |
 | [`Meter`](docs/meter.md) | Counts bytes and chunks as they pass, with throttled progress callbacks | ✓ | ✓ |
 | [`Watchdog`](docs/watchdog.md) | Fails the stream if no data arrives for a while, ignoring time spent on backpressure | ✓ | ✓ |
+| [`Throttle`](docs/throttle.md) | Limits a stream to an average rate in bytes or records per second | ✓ | ✓ |
 
 ## Errors
 
