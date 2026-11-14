@@ -1,6 +1,6 @@
 # Changelog
 
-## syke 0.1.0 (unreleased)
+## syke 0.1.0 (2026-11-13)
 
 First release of `syke`: stream utilities for memory-bound work, in two
 flavours with the same names and options. `syke/node` builds on Node.js streams
