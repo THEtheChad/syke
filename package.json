@@ -61,6 +61,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:browser": "pnpm build && node scripts/test-browser.mjs",
     "lint:package": "publint && attw --pack . --profile node16 && node scripts/check-web-bundle.mjs",
     "check": "pnpm typecheck && pnpm test && pnpm build && pnpm lint:package",
     "prepublishOnly": "pnpm check"
