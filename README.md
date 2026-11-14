@@ -39,7 +39,7 @@ Both share one implementation of each utility's logic, so they behave the same.
 
 | Utility | What it does | `syke/node` | `syke/web` |
 | ------- | ------------ | :---------: | :--------: |
-| [`Spool`](docs/spool.md) | A pass-through that spills to disk instead of applying backpressure to its source | ✓ | |
+| [`Spool`](docs/spool.md) | A pass-through that spills to disk instead of applying backpressure to its source (OPFS or IndexedDB in the browser) | ✓ | ✓ |
 | [`LengthCheck`](docs/length-check.md) | Fails the stream if it's longer or shorter than expected | ✓ | ✓ |
 | [`Digest`](docs/digest.md) | Hashes data as it passes, optionally verifying an expected checksum | ✓ | ✓ |
 
