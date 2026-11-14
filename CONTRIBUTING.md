@@ -9,7 +9,7 @@ pnpm install
 pnpm check   # typecheck, tests, build, publint, attw, web-bundle guard
 ```
 
-`pnpm test:browser` runs `test/browser/` (the web `Spool` against real OPFS
+`pnpm test:browser` runs `test/browser/` (every `syke/web` utility, and the web `Spool` in depth against real OPFS
 and IndexedDB) in headless Edge, Chrome and Firefox; see
 `scripts/test-browser.mjs` for where it looks for them.
 

@@ -1,5 +1,5 @@
-// Runs test/browser (syke/web's Spool against real OPFS and IndexedDB) in
-// headless browsers. Each page POSTs its results back to this server.
+// Runs test/browser (syke/web: the Spool against real OPFS and IndexedDB, plus
+// every other utility) in headless browsers. Each page POSTs its results back.
 //
 //   pnpm test:browser                    every browser found
 //   pnpm test:browser chrome firefox     just those
@@ -98,6 +98,7 @@ function serve() {
     '/csp.html': 'test/browser/frame.html',
     '/tests.js': 'test/browser/tests.js',
     '/util.js': 'test/browser/util.js',
+    '/utilities.js': 'test/browser/utilities.js',
     '/frame.js': 'test/browser/frame.js',
   }
   const server = createServer(async (req, res) => {

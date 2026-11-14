@@ -1,9 +1,10 @@
-// Browser tests for syke/web's Spool, run in real browsers by
+// Browser tests for syke/web (the Spool in depth, every other utility in brief), run in real browsers by
 // scripts/test-browser.mjs (`pnpm test:browser`). Also runnable by hand:
 // `pnpm test:browser --serve`, then open the printed URL.
 //
 // Imports the built bundle (dist/web.mjs), as an app would.
 import { Spool, SpoolLimitError } from '/dist/web.mjs'
+import { utilityTests } from './utilities.js'
 import { frame, idbRows, opfsSpoolFiles, randomData, readAll, sleep, spillStalled, stallMonitor, waitFor } from './util.js'
 
 const KiB = 1024
@@ -277,6 +278,10 @@ await test('the sweep leaves live spools alone and removes abandoned ones', asyn
   second.remove()
   return `orphan left 1 file and ${rows} records; both removed by the next page's sweep`
 })
+
+// --- Every other syke/web utility -------------------------------------------
+
+await utilityTests({ test, check, equalBytes, concat, randomData })
 
 // --- Bundling ----------------------------------------------------------------
 
