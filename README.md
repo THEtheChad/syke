@@ -37,25 +37,50 @@ Both share one implementation of each utility's logic, so they behave the same.
 
 ## Utilities
 
+### Flow control
+
+Keep a source moving, or deliberately slow it down.
+
 | Utility | What it does | `syke/node` | `syke/web` |
 | ------- | ------------ | :---------: | :--------: |
 | [`Spool`](docs/spool.md) | A pass-through that spills bytes or records to disk instead of applying backpressure to its source | ✓ | |
+| [`Throttle`](docs/throttle.md) | Limits a stream to an average rate in bytes or records per second | ✓ | ✓ |
+| [`Watchdog`](docs/watchdog.md) | Fails the stream if no data arrives for a while, ignoring time spent on backpressure | ✓ | ✓ |
+| [`Meter`](docs/meter.md) | Counts bytes and chunks as they pass, with throttled progress callbacks | ✓ | ✓ |
+
+### Integrity and limits
+
+Catch truncated, oversized or corrupted streams before you commit them.
+
+| Utility | What it does | `syke/node` | `syke/web` |
+| ------- | ------------ | :---------: | :--------: |
 | [`LengthCheck`](docs/length-check.md) | Fails the stream if it's longer or shorter than expected | ✓ | ✓ |
 | [`Digest`](docs/digest.md) | Hashes data as it passes, optionally verifying an expected checksum | ✓ | ✓ |
+| [`Cap`](docs/cap.md) | Limits a stream to its first N bytes or records, failing or truncating past that | ✓ | ✓ |
+
+### Reshaping
+
+Change what a chunk is: fixed-size blocks, lines, records, batches.
+
+| Utility | What it does | `syke/node` | `syke/web` |
+| ------- | ------------ | :---------: | :--------: |
+| [`Rechunk`](docs/rechunk.md) | Re-cuts a byte stream into chunks of exactly N bytes | ✓ | ✓ |
 | [`Lines`](docs/lines.md) | Decodes bytes and emits one string per line | ✓ | ✓ |
 | [`NdjsonParse`](docs/ndjson.md) | Parses newline-delimited JSON into values | ✓ | ✓ |
 | [`NdjsonStringify`](docs/ndjson.md#ndjsonstringify) | Serialises values as newline-delimited JSON | ✓ | ✓ |
 | [`Batch`](docs/batch.md) | Groups records into arrays for bulk inserts, with an optional time limit | ✓ | ✓ |
 | [`ParallelMap`](docs/parallel-map.md) | Maps records through an async function with bounded concurrency | ✓ | ✓ |
+
+### Combining
+
+Functions that split, join or inspect whole streams.
+
+| Utility | What it does | `syke/node` | `syke/web` |
+| ------- | ------------ | :---------: | :--------: |
 | [`fork`](docs/fork.md) | Splits a stream into branches that each get every chunk, with bounded memory | ✓ | ✓ |
 | [`peek`](docs/peek.md) | Reads the first bytes of a stream, then replays the whole stream | ✓ | ✓ |
 | [`concat`](docs/concat.md) | Emits several streams one after another, opening each when it's reached | ✓ | ✓ |
 | [`merge`](docs/merge.md) | Interleaves several streams as their chunks arrive | ✓ | ✓ |
-| [`Cap`](docs/cap.md) | Limits a stream to its first N bytes or records, failing or truncating past that | ✓ | ✓ |
-| [`Rechunk`](docs/rechunk.md) | Re-cuts a byte stream into chunks of exactly N bytes | ✓ | ✓ |
-| [`Meter`](docs/meter.md) | Counts bytes and chunks as they pass, with throttled progress callbacks | ✓ | ✓ |
-| [`Watchdog`](docs/watchdog.md) | Fails the stream if no data arrives for a while, ignoring time spent on backpressure | ✓ | ✓ |
-| [`Throttle`](docs/throttle.md) | Limits a stream to an average rate in bytes or records per second | ✓ | ✓ |
 
 ## Errors
 
