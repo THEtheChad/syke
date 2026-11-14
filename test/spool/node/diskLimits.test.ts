@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto'
 import { readdirSync, statSync } from 'node:fs'
 import { readdir, statfs } from 'node:fs/promises'
 import { join } from 'node:path'
-import { Readable } from 'node:stream'
+import { Readable, Writable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { Spool, SpoolLimitError } from '../../../src/node.ts'
@@ -196,6 +196,33 @@ describe('minFreeSpace', () => {
 
     expect(spool.filepath).toBeNull()
     expect(out.received.equals(data)).toBe(true)
+  })
+
+  it('still delivers records in object mode when the disk is already below the floor', async () => {
+    fakeDisk({ total: 100 * MiB, free: MiB })
+    const records = Array.from({ length: 2000 }, (_, i) => ({ i, at: new Date(i) }))
+    const spool = new Spool({ objectMode: true, dir: tmp.path })
+    const received: unknown[] = []
+    let release: () => void = () => {}
+    const stalled = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const out = new Writable({
+      objectMode: true,
+      highWaterMark: 1,
+      write(record, _encoding, done) {
+        received.push(record)
+        stalled.then(() => done())
+      },
+    })
+
+    const done = pipeline(Readable.from(records), spool, out)
+    await sleep(100)
+    release()
+    await done
+
+    expect(spool.filepath).toBeNull()
+    expect(received).toEqual(records)
   })
 
   it("fails with SpoolLimitError when onLimit is 'error'", async () => {

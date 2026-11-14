@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { type FileHandle, open, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Duplex, type DuplexOptions, pipeline, Readable } from 'node:stream'
+import { Duplex, type DuplexOptions, getDefaultHighWaterMark, pipeline, Readable } from 'node:stream'
 import type { ReadableStream } from 'node:stream/web'
 import {
   type FreeSpaceFloor,
@@ -14,23 +14,37 @@ import {
 import { SykeError } from '../../shared/errors.ts'
 import { nonNegativeInt, positiveInt } from '../../shared/validate.ts'
 import { ExtentMap, type Region } from '../core/extents.ts'
+import { type Codec, FrameDecoder, SpoolCodecError, encodeFrame } from '../core/records.ts'
 import { releaseFile, trackFile } from './fileRegistry.ts'
+import { v8Codec } from './v8Codec.ts'
 
 export interface SpoolOptions
   extends Pick<
     DuplexOptions,
     'highWaterMark' | 'readableHighWaterMark' | 'writableHighWaterMark' | 'signal'
   > {
+  /**
+   * Carry records (any value but `null`) instead of bytes. Records pass
+   * through and wait in memory as they are; only records that spill to disk
+   * go through `codec`. Defaults to `false`.
+   */
+  objectMode?: boolean
+  /**
+   * How records are written to disk in object mode. Must round-trip every
+   * record the stream carries. Defaults to `v8Codec`.
+   */
+  codec?: Codec
   /** Directory for the temporary spool file. Defaults to `os.tmpdir()`. */
   dir?: string
   /**
    * Largest chunk, in bytes, read back from disk and pushed downstream.
-   * Defaults to the readable high-water mark.
+   * Defaults to the readable high-water mark (64 KiB in object mode).
    */
   chunkSize?: number
   /**
-   * Bytes to hold in memory before spilling to disk. Defaults to `0`, so
-   * everything the consumer is not ready for goes straight to disk.
+   * Bytes (records, in object mode) to hold in memory before spilling to
+   * disk. Defaults to `0`, so everything the consumer is not ready for goes
+   * straight to disk.
    */
   memoryThreshold?: number
   /**
@@ -49,12 +63,15 @@ export interface SpoolOptions
   onLimit?: 'backpressure' | 'error'
 }
 
-/** Anything `Spool.from()` can read from. */
-export type SpoolSource =
+/**
+ * Anything `Spool.from()` can read from. `T` is the chunk type of an
+ * iterable: bytes by default, any record in object mode.
+ */
+export type SpoolSource<T = Buffer | Uint8Array | string> =
   | NodeJS.ReadableStream
   | ReadableStream
-  | Iterable<Buffer | Uint8Array | string>
-  | AsyncIterable<Buffer | Uint8Array | string>
+  | Iterable<T>
+  | AsyncIterable<T>
 
 /** The stream hit `maxDiskBytes` or `minFreeSpace` with `onLimit: 'error'`. */
 export class SpoolLimitError extends SykeError {
@@ -76,6 +93,8 @@ export class Spool extends Duplex {
   filepath: string | null = null
 
   readonly #dir: string
+  readonly #objectMode: boolean
+  readonly #codec: Codec
   readonly #chunkSize: number
   readonly #memoryThreshold: number
   readonly #maxDiskBytes: number
@@ -90,8 +109,15 @@ export class Spool extends Duplex {
   #wakeWriter: (() => void) | null = null
   #pending = new Set<Promise<unknown>>()
 
-  #memory: Buffer[] = []
-  #memoryBytes = 0
+  // Chunks (records, in object mode) waiting in memory, oldest first, and
+  // their total size: bytes, or a count of records.
+  #memory: unknown[] = []
+  #memorySize = 0
+
+  // Object mode: records decoded from disk but not yet pushed. Always older
+  // than anything in memory or on disk.
+  #decoded: unknown[] = []
+  #decoder = new FrameDecoder()
 
   #wantsData = false
   #writeEnded = false
@@ -106,15 +132,20 @@ export class Spool extends Duplex {
    * Overrides the inherited `Duplex.from()`, which would return a plain
    * `Duplex` with no disk spilling.
    */
-  static override from(source: SpoolSource, options?: SpoolOptions): Spool {
+  static override from(source: SpoolSource, options?: SpoolOptions & { objectMode?: false }): Spool
+  /** Reads records from `source`: `Spool.from(cursor, { objectMode: true })`. */
+  static override from(source: SpoolSource<unknown>, options: SpoolOptions & { objectMode: true }): Spool
+  static override from(source: SpoolSource<unknown>, options?: SpoolOptions): Spool {
     const spool = new Spool(options)
     // Errors surface on `spool` itself; the callback only stops pipeline from
     // reporting them a second time.
-    pipeline(toNodeReadable(source), spool, () => {})
+    pipeline(toNodeReadable(source, spool.#objectMode), spool, () => {})
     return spool
   }
 
   constructor({
+    objectMode,
+    codec,
     dir,
     chunkSize,
     memoryThreshold,
@@ -123,9 +154,24 @@ export class Spool extends Duplex {
     onLimit,
     ...options
   }: SpoolOptions = {}) {
-    super({ ...options, objectMode: false, decodeStrings: true })
+    if (objectMode !== undefined && typeof objectMode !== 'boolean') {
+      throw new TypeError(`syke: objectMode must be a boolean, got ${String(objectMode)}`)
+    }
+    if (codec !== undefined) {
+      if (!objectMode) throw new TypeError('syke: codec needs objectMode: true')
+      if (typeof codec?.encode !== 'function' || typeof codec.decode !== 'function') {
+        throw new TypeError('syke: codec must have encode() and decode() methods')
+      }
+    }
+    super({ ...options, objectMode: objectMode ?? false, decodeStrings: true })
+    this.#objectMode = objectMode ?? false
+    this.#codec = codec ?? v8Codec
     this.#dir = dir ?? tmpdir()
-    this.#chunkSize = positiveInt('chunkSize', chunkSize ?? this.readableHighWaterMark)
+    // In object mode the high-water mark counts records, so it can't size reads.
+    this.#chunkSize = positiveInt(
+      'chunkSize',
+      chunkSize ?? (this.#objectMode ? getDefaultHighWaterMark(false) : this.readableHighWaterMark),
+    )
     this.#memoryThreshold = nonNegativeInt('memoryThreshold', memoryThreshold ?? 0)
     this.#maxDiskBytes =
       maxDiskBytes === undefined
@@ -139,25 +185,29 @@ export class Spool extends Duplex {
     }
     this.#onLimit = onLimit ?? 'backpressure'
     this.#extents = new ExtentMap(this.#chunkSize, this.#maxDiskBytes)
+    // Batching records that queue up while a spill is in flight lets them
+    // share one encode-and-write. Byte mode keeps one write per chunk.
+    if (this.#objectMode) {
+      this._writev = (chunks, done) => this.#writeRecords(chunks.map(({ chunk }) => chunk), done)
+    }
   }
 
   override _write(
-    chunk: Buffer,
+    chunk: unknown,
     _encoding: BufferEncoding,
     done: (error?: Error | null) => void,
   ): void {
-    if (this.#passThrough(chunk)) return done()
+    if (this.#objectMode) return this.#writeRecords([chunk], done)
 
-    // Memory only takes data while the disk is empty, so memory is always older.
-    if (this.#diskEmpty() && this.#memoryBytes + chunk.length <= this.#memoryThreshold) {
-      this.#memory.push(chunk)
-      this.#memoryBytes += chunk.length
+    const bytes = chunk as Buffer
+    if (this.#passThrough(bytes)) return done()
+    if (this.#toMemory(bytes, bytes.length)) {
       done()
       this.#flush()
       return
     }
 
-    this.#track(this.#spill(chunk)).then(() => {
+    this.#track(this.#spill(bytes)).then(() => {
       done()
       this.#flush()
     }, done)
@@ -176,7 +226,9 @@ export class Spool extends Duplex {
 
   override _destroy(error: Error | null, done: (error?: Error | null) => void): void {
     this.#memory = []
-    this.#memoryBytes = 0
+    this.#memorySize = 0
+    this.#decoded = []
+    this.#decoder = new FrameDecoder()
     this.#wakeWriter?.()
     this.#cleanup().then(
       () => done(error),
@@ -185,9 +237,111 @@ export class Spool extends Duplex {
   }
 
   /** Hands `chunk` straight to a waiting consumer if nothing is queued ahead of it. */
-  #passThrough(chunk: Buffer) {
-    if (!this.#wantsData || !this.#diskEmpty() || this.#memory.length > 0) return false
+  #passThrough(chunk: unknown) {
+    if (!this.#wantsData || this.#queued()) return false
     this.#wantsData = this.push(chunk)
+    return true
+  }
+
+  /** Something is waiting to be pushed: decoded records, memory or disk. */
+  #queued() {
+    return this.#decoded.length > 0 || this.#memory.length > 0 || !this.#diskEmpty()
+  }
+
+  /** Holds `chunk` in memory if it fits under `memoryThreshold`. */
+  #toMemory(chunk: unknown, size: number) {
+    // Memory only takes data while the disk is empty, so memory is always older.
+    if (!this.#diskEmpty() || this.#memorySize + size > this.#memoryThreshold) return false
+    this.#memory.push(chunk)
+    this.#memorySize += size
+    return true
+  }
+
+  /**
+   * Object mode: passes records through or holds them in memory, as they
+   * are, while that keeps them in order; encodes the rest to disk.
+   */
+  #writeRecords(records: unknown[], done: (error?: Error | null) => void) {
+    let start = 0
+    while (start < records.length && this.#acceptRecord(records[start])) start++
+    if (start === records.length) {
+      done()
+      this.#flush()
+      return
+    }
+    this.#track(this.#spillRecords(records, start)).then(() => {
+      done()
+      this.#flush()
+    }, done)
+  }
+
+  #acceptRecord(record: unknown) {
+    return this.#passThrough(record) || this.#toMemory(record, 1)
+  }
+
+  /** Encodes `records[start..]` and spills them, about `chunkSize` bytes per write. */
+  async #spillRecords(records: unknown[], start: number) {
+    let frames: Uint8Array[] = []
+    let bytes = 0
+    const write = async () => {
+      const batch = frames.length === 1 ? (frames[0] as Uint8Array) : Buffer.concat(frames, bytes)
+      frames = []
+      bytes = 0
+      await this.#spill(batch)
+    }
+
+    for (let i = start; i < records.length; i++) {
+      if (this.destroyed) return
+      // If the consumer caught up mid-batch, the rest can skip the codec.
+      if (i > start && frames.length === 0 && this.#acceptRecord(records[i])) continue
+      const frame = encodeFrame(this.#encode(records[i]))
+      frames.push(frame)
+      bytes += frame.byteLength
+      if (bytes >= this.#chunkSize) await write()
+    }
+    if (frames.length > 0) await write()
+  }
+
+  #encode(record: unknown): Uint8Array {
+    let bytes: unknown
+    try {
+      bytes = this.#codec.encode(record)
+    } catch (cause) {
+      throw new SpoolCodecError(`syke: codec failed to encode a record: ${messageOf(cause)}`, { cause })
+    }
+    if (!(bytes instanceof Uint8Array)) {
+      throw new SpoolCodecError(`syke: codec.encode() must return a Uint8Array, got ${typeName(bytes)}`)
+    }
+    return bytes
+  }
+
+  /** Object mode: decodes every record completed by `bytes` into the decoded queue. */
+  #decodeRecords(bytes: Uint8Array) {
+    for (const payload of this.#decoder.push(bytes)) {
+      let record: unknown
+      try {
+        record = this.#codec.decode(payload)
+      } catch (cause) {
+        throw new SpoolCodecError(`syke: codec failed to decode a record: ${messageOf(cause)}`, { cause })
+      }
+      // push(null) would end the stream and silently drop the rest.
+      if (record === null) {
+        throw new SpoolCodecError('syke: codec decoded a record to null, which a Node stream cannot carry')
+      }
+      this.#decoded.push(record)
+    }
+  }
+
+  /**
+   * At a disk limit with nothing queued and the consumer waiting, hands
+   * `bytes` (the rest of a spill) straight over rather than waiting for space.
+   */
+  #handOver(bytes: Uint8Array) {
+    if (!this.#objectMode) return this.#passThrough(bytes)
+    if (!this.#wantsData || this.#queued()) return false
+    // The decoder may hold the start of the frame these bytes finish.
+    this.#decodeRecords(bytes)
+    this.#flush()
     return true
   }
 
@@ -196,7 +350,7 @@ export class Spool extends Duplex {
     return this.#extents.empty && !this.#writing
   }
 
-  async #spill(chunk: Buffer) {
+  async #spill(chunk: Uint8Array) {
     let rest = chunk
     while (rest.length > 0) {
       if (this.destroyed) return
@@ -215,7 +369,7 @@ export class Spool extends Duplex {
 
       if (!target) {
         // At a limit with nothing queued and the consumer waiting: hand it over.
-        if (this.#passThrough(rest)) return
+        if (this.#handOver(rest)) return
         if (this.#onLimit === 'error') throw new SpoolLimitError(this.#limitMessage(budget))
         await this.#waitForSpace()
         continue
@@ -285,9 +439,14 @@ export class Spool extends Duplex {
     this.#wakeWriter?.()
     if (this.#reading) return
 
+    while (this.#wantsData && this.#decoded.length > 0) {
+      this.#wantsData = this.push(this.#decoded.shift())
+    }
+    if (this.#decoded.length > 0) return
+
     while (this.#wantsData && this.#memory.length > 0) {
-      const chunk = this.#memory.shift() as Buffer
-      this.#memoryBytes -= chunk.length
+      const chunk = this.#memory.shift()
+      this.#memorySize -= this.#objectMode ? 1 : (chunk as Buffer).length
       this.#wantsData = this.push(chunk)
     }
 
@@ -299,6 +458,10 @@ export class Spool extends Duplex {
     }
 
     if (this.#writeEnded && this.#diskEmpty()) {
+      if (this.#decoder.pendingBytes > 0) {
+        this.destroy(new Error(`syke: spool file ended mid-record (${this.filepath})`))
+        return
+      }
       this.#readEnded = true
       this.push(null)
     }
@@ -321,7 +484,17 @@ export class Spool extends Duplex {
         }
 
         this.#extents.read(bytesRead)
-        this.#wantsData = this.push(bytesRead < length ? buffer.subarray(0, bytesRead) : buffer)
+        const bytes = bytesRead < length ? buffer.subarray(0, bytesRead) : buffer
+        if (this.#objectMode) {
+          try {
+            this.#decodeRecords(bytes)
+          } catch (error) {
+            this.destroy(error as Error)
+            return
+          }
+        } else {
+          this.#wantsData = this.push(bytes)
+        }
         this.#flush()
       },
       (error: Error) => {
@@ -353,12 +526,22 @@ export class Spool extends Duplex {
   }
 }
 
-function toNodeReadable(source: SpoolSource): NodeJS.ReadableStream {
+function toNodeReadable(source: SpoolSource<unknown>, objectMode: boolean): NodeJS.ReadableStream {
   if (typeof (source as NodeJS.ReadableStream).pipe === 'function') {
     return source as NodeJS.ReadableStream
   }
   if (typeof (source as ReadableStream).getReader === 'function') {
-    return Readable.fromWeb(source as ReadableStream)
+    return Readable.fromWeb(source as ReadableStream, { objectMode })
   }
-  return Readable.from(source as Iterable<unknown> | AsyncIterable<unknown>, { objectMode: false })
+  return Readable.from(source as Iterable<unknown> | AsyncIterable<unknown>, { objectMode })
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function typeName(value: unknown): string {
+  if (value === null) return 'null'
+  if (typeof value !== 'object') return typeof value
+  return value.constructor?.name ?? 'object'
 }

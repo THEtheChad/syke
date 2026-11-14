@@ -1,3 +1,5 @@
+import { SykeError } from '../../shared/errors.ts'
+
 /**
  * Turns records into bytes and back, so an object-mode spool can write them
  * to storage. Must round-trip every value the stream carries.
@@ -101,4 +103,14 @@ export class FrameDecoder {
     if (consume) this.#pendingBytes -= n
     return out
   }
+}
+
+/**
+ * A codec threw, or returned something unusable, while an object-mode spool
+ * was writing records to storage or reading them back. The codec's own error,
+ * if any, is the `cause`.
+ */
+export class SpoolCodecError extends SykeError {
+  override readonly code: 'ERR_SYKE_SPOOL_CODEC' = 'ERR_SYKE_SPOOL_CODEC'
+  override name = 'SpoolCodecError'
 }
