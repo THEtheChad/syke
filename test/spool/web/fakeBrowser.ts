@@ -6,7 +6,8 @@ import { afterEach, vi } from 'vitest'
  * Just enough of a browser for the web Spool's storage to run in Node:
  * `fake-indexeddb`, an in-memory OPFS with sync access handles, a `Worker`
  * that runs the real worker source (from its Blob URL) against that OPFS,
- * and `navigator.storage.estimate()`. Node already has `navigator.locks`.
+ * and `navigator.storage.estimate()`. Node 24+ has `navigator.locks`; on
+ * Node 22 the sweep tests that need it are skipped.
  */
 export interface FakeBrowserOptions {
   /** No `Worker` global at all (as in Node or Deno). */

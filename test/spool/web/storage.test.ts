@@ -129,7 +129,11 @@ describe('choosing storage', () => {
   })
 })
 
-describe('the sweep of abandoned spools', () => {
+// The sweep needs Web Locks, which Node only has from v24 (syke/web skips the
+// sweep where it's missing). `pnpm test:browser` covers it in real browsers.
+const hasWebLocks = typeof navigator !== 'undefined' && navigator.locks !== undefined
+
+describe.runIf(hasWebLocks)('the sweep of abandoned spools', () => {
   /** Leaves data as a spool in a closed tab would: an OPFS file and IndexedDB records, with its lock. */
   async function leaveOrphan(storageKinds: ('opfs' | 'indexeddb')[]) {
     const { Spool } = await freshPage()
