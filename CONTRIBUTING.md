@@ -9,6 +9,10 @@ pnpm install
 pnpm check   # typecheck, tests, build, publint, attw, web-bundle guard
 ```
 
+`pnpm test:browser` runs `test/browser/` (the web `Spool` against real OPFS
+and IndexedDB) in headless Edge, Chrome and Firefox; see
+`scripts/test-browser.mjs` for where it looks for them.
+
 Commits follow [Conventional Commits](https://www.conventionalcommits.org/):
 `feat: add Rechunk`, `fix(spool): ...`, `docs: ...`, `test: ...`.
 

@@ -114,3 +114,36 @@ export class SpoolCodecError extends SykeError {
   override readonly code: 'ERR_SYKE_SPOOL_CODEC' = 'ERR_SYKE_SPOOL_CODEC'
   override name = 'SpoolCodecError'
 }
+
+/** Encodes one record with `codec`, failing with a `SpoolCodecError` if the codec throws or returns non-bytes. */
+export function encodeRecord(codec: Codec, record: unknown): Uint8Array {
+  let bytes: unknown
+  try {
+    bytes = codec.encode(record)
+  } catch (cause) {
+    throw new SpoolCodecError(`syke: codec failed to encode a record: ${messageOf(cause)}`, { cause })
+  }
+  if (!(bytes instanceof Uint8Array)) {
+    throw new SpoolCodecError(`syke: codec.encode() must return a Uint8Array, got ${typeName(bytes)}`)
+  }
+  return bytes
+}
+
+/** Decodes one record with `codec`, failing with a `SpoolCodecError` if the codec throws. */
+export function decodeRecord(codec: Codec, bytes: Uint8Array): unknown {
+  try {
+    return codec.decode(bytes)
+  } catch (cause) {
+    throw new SpoolCodecError(`syke: codec failed to decode a record: ${messageOf(cause)}`, { cause })
+  }
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function typeName(value: unknown): string {
+  if (value === null) return 'null'
+  if (typeof value !== 'object') return typeof value
+  return value.constructor?.name ?? 'object'
+}

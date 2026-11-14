@@ -43,7 +43,7 @@ Keep a source moving, or deliberately slow it down.
 
 | Utility | What it does | `syke/node` | `syke/web` |
 | ------- | ------------ | :---------: | :--------: |
-| [`Spool`](docs/spool.md) | A pass-through that spills bytes or records to disk instead of applying backpressure to its source | ✓ | |
+| [`Spool`](docs/spool.md) | A pass-through that spills bytes or records to disk (OPFS or IndexedDB in the browser) instead of applying backpressure to its source | ✓ | ✓ |
 | [`Throttle`](docs/throttle.md) | Limits a stream to an average rate in bytes or records per second | ✓ | ✓ |
 | [`Watchdog`](docs/watchdog.md) | Fails the stream if no data arrives for a while, ignoring time spent on backpressure | ✓ | ✓ |
 | [`Meter`](docs/meter.md) | Counts bytes and chunks as they pass, with throttled progress callbacks | ✓ | ✓ |

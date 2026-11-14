@@ -11,10 +11,10 @@ import {
   parseMinFreeSpace,
   warnIfMemoryBacked,
 } from './diskSpace.ts'
-import { SykeError } from '../../shared/errors.ts'
 import { nonNegativeInt, positiveInt } from '../../shared/validate.ts'
 import { ExtentMap, type Region } from '../core/extents.ts'
-import { type Codec, FrameDecoder, SpoolCodecError, encodeFrame } from '../core/records.ts'
+import { type Codec, decodeRecord, encodeFrame, encodeRecord, FrameDecoder, SpoolCodecError } from '../core/records.ts'
+import { SpoolLimitError } from '../core/limits.ts'
 import { releaseFile, trackFile } from './fileRegistry.ts'
 import { v8Codec } from './v8Codec.ts'
 
@@ -73,11 +73,7 @@ export type SpoolSource<T = Buffer | Uint8Array | string> =
   | Iterable<T>
   | AsyncIterable<T>
 
-/** The stream hit `maxDiskBytes` or `minFreeSpace` with `onLimit: 'error'`. */
-export class SpoolLimitError extends SykeError {
-  override readonly code: 'ERR_SYKE_SPOOL_LIMIT' = 'ERR_SYKE_SPOOL_LIMIT'
-  override name = 'SpoolLimitError'
-}
+export { SpoolLimitError }
 
 /** How often to recheck free space while waiting on `minFreeSpace`. */
 const FREE_SPACE_POLL_MS = 250
@@ -294,7 +290,7 @@ export class Spool extends Duplex {
       if (this.destroyed) return
       // If the consumer caught up mid-batch, the rest can skip the codec.
       if (i > start && frames.length === 0 && this.#acceptRecord(records[i])) continue
-      const frame = encodeFrame(this.#encode(records[i]))
+      const frame = encodeFrame(encodeRecord(this.#codec, records[i]))
       frames.push(frame)
       bytes += frame.byteLength
       if (bytes >= this.#chunkSize) await write()
@@ -302,28 +298,10 @@ export class Spool extends Duplex {
     if (frames.length > 0) await write()
   }
 
-  #encode(record: unknown): Uint8Array {
-    let bytes: unknown
-    try {
-      bytes = this.#codec.encode(record)
-    } catch (cause) {
-      throw new SpoolCodecError(`syke: codec failed to encode a record: ${messageOf(cause)}`, { cause })
-    }
-    if (!(bytes instanceof Uint8Array)) {
-      throw new SpoolCodecError(`syke: codec.encode() must return a Uint8Array, got ${typeName(bytes)}`)
-    }
-    return bytes
-  }
-
   /** Object mode: decodes every record completed by `bytes` into the decoded queue. */
   #decodeRecords(bytes: Uint8Array) {
     for (const payload of this.#decoder.push(bytes)) {
-      let record: unknown
-      try {
-        record = this.#codec.decode(payload)
-      } catch (cause) {
-        throw new SpoolCodecError(`syke: codec failed to decode a record: ${messageOf(cause)}`, { cause })
-      }
+      const record = decodeRecord(this.#codec, payload)
       // push(null) would end the stream and silently drop the rest.
       if (record === null) {
         throw new SpoolCodecError('syke: codec decoded a record to null, which a Node stream cannot carry')
@@ -534,14 +512,4 @@ function toNodeReadable(source: SpoolSource<unknown>, objectMode: boolean): Node
     return Readable.fromWeb(source as ReadableStream, { objectMode })
   }
   return Readable.from(source as Iterable<unknown> | AsyncIterable<unknown>, { objectMode })
-}
-
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
-
-function typeName(value: unknown): string {
-  if (value === null) return 'null'
-  if (typeof value !== 'object') return typeof value
-  return value.constructor?.name ?? 'object'
 }
