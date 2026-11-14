@@ -51,6 +51,11 @@ Both share one implementation of each utility's logic, so they behave the same.
 | [`peek`](docs/peek.md) | Reads the first bytes of a stream, then replays the whole stream | ✓ | ✓ |
 | [`concat`](docs/concat.md) | Emits several streams one after another, opening each when it's reached | ✓ | ✓ |
 | [`merge`](docs/merge.md) | Interleaves several streams as their chunks arrive | ✓ | ✓ |
+| [`Cap`](docs/cap.md) | Limits a stream to its first N bytes or records, failing or truncating past that | ✓ | ✓ |
+| [`Rechunk`](docs/rechunk.md) | Re-cuts a byte stream into chunks of exactly N bytes | ✓ | ✓ |
+| [`Meter`](docs/meter.md) | Counts bytes and chunks as they pass, with throttled progress callbacks | ✓ | ✓ |
+| [`Watchdog`](docs/watchdog.md) | Fails the stream if no data arrives for a while, ignoring time spent on backpressure | ✓ | ✓ |
+| [`Throttle`](docs/throttle.md) | Limits a stream to an average rate in bytes or records per second | ✓ | ✓ |
 
 ## Errors
 
