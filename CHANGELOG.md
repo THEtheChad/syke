@@ -56,6 +56,25 @@ successor to the `stream-fs-proxy` package's `FSProxy`.
   counts records; `chunkSize`, `maxDiskBytes` and `minFreeSpace` stay in bytes.
   `Spool.from(source, { objectMode: true })` accepts sources of records.
 
+### Added: Spool in the browser (`syke/web`)
+
+- `Spool` in `syke/web` is a `{ readable, writable }` pass-through for
+  `pipeThrough()` that doesn't apply backpressure to its source. It spills to
+  OPFS (sync access handles in an inline worker) and falls back to IndexedDB
+  when a CSP blocks the worker or OPFS is missing. It takes the same
+  `chunkSize`, `memoryThreshold`, `minFreeSpace` (measured against the origin's
+  quota), `maxDiskBytes`, `onLimit`, `objectMode` and `codec` options as Node
+  (codec default `jsonCodec`), plus `storage` (`'auto' | 'opfs' | 'indexeddb'`).
+  `spool.storage` reports the backend chosen; `spool.closed` settles once
+  storage is deleted.
+- Storage is deleted on end, error, cancel and garbage collection. Data left by
+  a closed or crashed tab is removed by the next page's sweep, using Web Locks.
+- `SpoolStorageError` (`ERR_SYKE_SPOOL_STORAGE`) when a backend asked for by
+  name is unavailable. `SpoolLimitError` and `SpoolCodecError` are shared by
+  both entry points.
+- Tested in Edge 157, Chrome 157 and Firefox 160 (`pnpm test:browser`); Safari
+  and mobile browsers are untested.
+
 ### Added: utilities for `syke/node` and `syke/web`
 
 Integrity and limits:
