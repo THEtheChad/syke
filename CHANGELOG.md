@@ -1,5 +1,9 @@
 # Changelog
 
+Release notes after 0.1.0 are on
+[GitHub Releases](https://github.com/THEtheChad/syke/releases), generated from
+the commit history. This file keeps the notes for the first release.
+
 ## syke 0.1.0 (2026-11-16)
 
 First release of syke, published to npm as `@thethechad/syke`: stream

@@ -86,16 +86,25 @@ comments that say why.
 
 ## Releasing
 
-Releases publish from GitHub Actions (`.github/workflows/release.yml`) through
-npm trusted publishing, so nobody needs an npm token.
+Releases are automatic. On every push to `main`, the release workflow
+(`.github/workflows/release.yml`) runs `pnpm check` and then
+[semantic-release](https://semantic-release.gitbook.io), which reads the
+Conventional Commits since the last tag:
 
-1. Bump `version` in `package.json` and date the entry in `CHANGELOG.md`, in a
-   `chore(release): x.y.z` commit on `main`.
-2. Tag it and push the tag: `git tag -a vx.y.z -m "syke x.y.z" && git push
-   origin vx.y.z`.
+| Commits since the last release | Release |
+| --- | --- |
+| `fix:` or `perf:` | patch (0.1.0 → 0.1.1) |
+| `feat:` | minor (0.1.0 → 0.2.0) |
+| `!` after the type, or a `BREAKING CHANGE:` footer | major (0.x → 1.0.0) |
+| only `docs`, `test`, `ci`, `chore`, `build`, `refactor`, `style` | none |
 
-The workflow checks that the tag matches `package.json`, runs `pnpm check`,
-and publishes with a provenance attestation. The trusted publisher on npm is
-tied to this repository, the `release.yml` workflow and the `npm`
-environment; renaming any of them breaks publishing until npm's settings are
+It then publishes to npm, tags `vX.Y.Z` and writes the release notes on
+GitHub Releases. Nothing is committed back: `version` in `package.json` stays
+a placeholder, and the real version only exists in the tag and the published
+package. So the commit type is the release decision; there is no manual
+version bump or changelog step.
+
+npm authenticates through trusted publishing, tied to this repository, the
+`release.yml` workflow and the `npm` environment (which only `main` may
+use). Renaming any of them breaks publishing until npm's settings are
 updated to match.

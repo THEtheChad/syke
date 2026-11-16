@@ -1,42 +1,44 @@
 name: Release
 
-# Publishes to npm when a version tag (v1.2.3) is pushed. Authenticates with
-# npm trusted publishing (OIDC), so no npm token is stored anywhere; npm adds
-# a provenance attestation automatically.
+# On every push to main, semantic-release reads the Conventional Commits since
+# the last tag and, if any call for a release (feat, fix, perf or a breaking
+# change), publishes to npm, tags vX.Y.Z and creates a GitHub release. npm
+# authenticates through trusted publishing (OIDC), so no npm token is stored
+# anywhere, and npm adds a provenance attestation.
 
 on:
   push:
-    tags: ['v*']
+    branches: [main]
 
 permissions:
   contents: read
-  id-token: write
 
 concurrency:
   group: release
   cancel-in-progress: false
 
 jobs:
-  publish:
+  release:
     runs-on: ubuntu-latest
     environment: npm
+    permissions:
+      contents: write # push the tag and create the GitHub release
+      issues: write # comment on issues fixed by the release
+      pull-requests: write # comment on pull requests in the release
+      id-token: write # npm trusted publishing
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version-file: .node-version
           cache: pnpm
-          registry-url: https://registry.npmjs.org
-      - name: Check the tag matches package.json
-        run: |
-          version="$(node -p 'require("./package.json").version')"
-          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version $version"
-            exit 1
-          fi
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
-      # npm, not pnpm: npm's CLI does the OIDC token exchange for trusted
-      # publishing. `pnpm check` already ran, so skip prepublishOnly.
-      - run: npm publish --ignore-scripts --access public
+      - run: pnpm exec semantic-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # `pnpm check` already ran; skip it again in prepublishOnly.
+          npm_config_ignore_scripts: 'true'
