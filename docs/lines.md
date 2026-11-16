@@ -9,7 +9,7 @@ as the first stage before parsing each record.
 ```js
 import { createReadStream } from 'node:fs'
 import { pipeline } from 'node:stream/promises'
-import { Lines } from 'syke/node'
+import { Lines } from '@thethechad/syke/node'
 
 await pipeline(createReadStream('access.log'), new Lines(), async (lines) => {
   for await (const line of lines) if (line.includes(' 500 ')) console.log(line)
@@ -17,7 +17,7 @@ await pipeline(createReadStream('access.log'), new Lines(), async (lines) => {
 ```
 
 ```js
-import { Lines } from 'syke/web'
+import { Lines } from '@thethechad/syke/web'
 
 const res = await fetch('/export.txt')
 for await (const line of res.body.pipeThrough(new Lines())) render(line)

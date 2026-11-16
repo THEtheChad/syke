@@ -11,7 +11,7 @@ a `Spool`, which spills to disk).
 
 ```js
 import { pipeline } from 'node:stream/promises'
-import { fork, Digest } from 'syke/node'
+import { fork, Digest } from '@thethechad/syke/node'
 
 const [toDisk, toHash] = fork(res)
 const digest = new Digest({ algorithm: 'sha256' })
@@ -22,7 +22,7 @@ await Promise.all([
 ```
 
 ```js
-import { fork } from 'syke/web'
+import { fork } from '@thethechad/syke/web'
 
 const [a, b] = fork(res.body)
 await Promise.all([a.pipeTo(upload), b.pipeTo(cache)])
@@ -31,7 +31,7 @@ await Promise.all([a.pipeTo(upload), b.pipeTo(cache)])
 A slow branch that shouldn't hold back the others (Node):
 
 ```js
-import { fork, Spool } from 'syke/node'
+import { fork, Spool } from '@thethechad/syke/node'
 
 const [live, archive] = fork(res, { buffer: () => new Spool() })
 ```

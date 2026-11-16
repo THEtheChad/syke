@@ -8,13 +8,13 @@ as fast as the output is consumed.
 
 ```js
 import { pipeline } from 'node:stream/promises'
-import { merge } from 'syke/node'
+import { merge } from '@thethechad/syke/node'
 
 await pipeline(merge([queueA, queueB, queueC]), processor)
 ```
 
 ```js
-import { merge } from 'syke/web'
+import { merge } from '@thethechad/syke/web'
 
 const events = merge([socketEvents, pollEvents])
 for await (const event of events) handle(event)

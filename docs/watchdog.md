@@ -10,13 +10,13 @@ the headers, not a body that stops halfway.
 
 ```js
 import { pipeline } from 'node:stream/promises'
-import { Watchdog } from 'syke/node'
+import { Watchdog } from '@thethechad/syke/node'
 
 await pipeline(res, new Watchdog({ timeout: 30_000 }), createWriteStream('download.bin'))
 ```
 
 ```js
-import { Watchdog } from 'syke/web'
+import { Watchdog } from '@thethechad/syke/web'
 
 await res.body
   .pipeThrough(new Watchdog({ timeout: 30_000, firstChunkTimeout: 120_000 }))

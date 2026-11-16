@@ -9,7 +9,7 @@ uploads.
 
 ```js
 import { pipeline } from 'node:stream/promises'
-import { LengthCheck } from 'syke/node'
+import { LengthCheck } from '@thethechad/syke/node'
 
 const res = await fetch(url)
 await pipeline(
@@ -20,7 +20,7 @@ await pipeline(
 ```
 
 ```js
-import { LengthCheck } from 'syke/web'
+import { LengthCheck } from '@thethechad/syke/web'
 
 await res.body
   .pipeThrough(new LengthCheck({ max: 50 * 1024 ** 2 }))

@@ -1,7 +1,7 @@
 {
-  "name": "syke",
+  "name": "@thethechad/syke",
   "version": "0.1.0",
-  "description": "Stream utilities for memory-bound work, for Node.js streams (syke/node) and Web Streams (syke/web).",
+  "description": "Stream utilities for memory-bound work, for Node.js streams (@thethechad/syke/node) and Web Streams (@thethechad/syke/web).",
   "keywords": [
     "stream",
     "streams",

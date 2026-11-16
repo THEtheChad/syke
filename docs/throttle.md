@@ -8,14 +8,14 @@ an API's rate limit, or to simulate a slow network in tests.
 
 ```js
 import { pipeline } from 'node:stream/promises'
-import { Throttle } from 'syke/node'
+import { Throttle } from '@thethechad/syke/node'
 
 // About 1 MB/s.
 await pipeline(createReadStream(path), new Throttle({ bytesPerSecond: 1e6 }), upload)
 ```
 
 ```js
-import { Throttle } from 'syke/web'
+import { Throttle } from '@thethechad/syke/web'
 
 // At most 10 records a second, one at a time.
 await records.pipeThrough(new Throttle({ itemsPerSecond: 10, burst: 1 })).pipeTo(api)

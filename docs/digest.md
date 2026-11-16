@@ -8,7 +8,7 @@ the result and fails the stream on a mismatch.
 
 ```js
 import { pipeline } from 'node:stream/promises'
-import { Digest } from 'syke/node'
+import { Digest } from '@thethechad/syke/node'
 
 const digest = new Digest({ algorithm: 'sha256' })
 await pipeline(source, digest, destination)
@@ -30,7 +30,7 @@ await pipeline(res.body, new Digest({ algorithm: 'sha256', expected: published }
   want:
 
 ```js
-import { Digest } from 'syke/web'
+import { Digest } from '@thethechad/syke/web'
 import { sha256 } from '@noble/hashes/sha2.js'   // audited, pure JS
 import { createSHA256 } from 'hash-wasm'           // WebAssembly, faster
 

@@ -1,11 +1,11 @@
 # Changelog
 
-## syke 0.1.0 (2026-11-13)
+## syke 0.1.0 (2026-11-16)
 
-First release of `syke`: stream utilities for memory-bound work, in two
-flavours with the same names and options. `syke/node` builds on Node.js streams
-and `syke/web` on Web Streams (browsers, Deno, Bun and Node). `syke/node`
-requires Node.js 22 or later.
+First release of syke, published to npm as `@thethechad/syke`: stream
+utilities for memory-bound work, in two flavours with the same names and
+options. `syke/node` builds on Node.js streams and `syke/web` on Web Streams
+(browsers, Deno, Bun and Node). `syke/node` requires Node.js 22 or later.
 
 ### Added: Spool
 

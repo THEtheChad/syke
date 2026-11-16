@@ -9,7 +9,7 @@ can inflate to gigabytes (a *decompression bomb*), and putting `Cap` after the
 decompressor stops it:
 
 ```js
-import { Cap } from 'syke/web'
+import { Cap } from '@thethechad/syke/web'
 
 const text = await new Response(
   req.body
@@ -21,7 +21,7 @@ const text = await new Response(
 ```js
 import { pipeline } from 'node:stream/promises'
 import { createGunzip } from 'node:zlib'
-import { Cap } from 'syke/node'
+import { Cap } from '@thethechad/syke/node'
 
 await pipeline(req, createGunzip(), new Cap({ maxBytes: 10 * 1024 ** 2 }), createWriteStream(path))
 ```

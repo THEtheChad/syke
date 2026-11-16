@@ -31,7 +31,7 @@ temp file, is described in [In the browser](#in-the-browser-sykeweb).
 
 ```js
 import { pipeline } from 'node:stream/promises'
-import { Spool } from 'syke/node'
+import { Spool } from '@thethechad/syke/node'
 
 const res = await fetch('https://example.com/large-dataset.ndjson')
 
@@ -41,7 +41,7 @@ await pipeline(res.body, new Spool(), slowDatabaseWriter)
 CommonJS works too:
 
 ```js
-const { Spool } = require('syke/node')
+const { Spool } = require('@thethechad/syke/node')
 ```
 
 Use `pipeline` rather than chained `.pipe()` calls so that an error anywhere in
@@ -98,7 +98,7 @@ out behind a slow consumer just like a network connection:
 
 ```js
 import { pipeline } from 'node:stream/promises'
-import { Spool } from 'syke/node'
+import { Spool } from '@thethechad/syke/node'
 
 await pipeline(db.collection('events').find().stream(), new Spool({ objectMode: true }), slowWriter)
 
@@ -132,7 +132,7 @@ differently depending on whether it happened to spill.
 
 ```js
 import { pack, unpack } from 'msgpackr'
-import { Spool, jsonCodec } from 'syke/node'
+import { Spool, jsonCodec } from '@thethechad/syke/node'
 
 new Spool({ objectMode: true, codec: jsonCodec })
 new Spool({ objectMode: true, codec: { encode: pack, decode: unpack } })
@@ -206,7 +206,7 @@ If there's no room at all, `onLimit` decides:
   failed one.
 
 ```js
-import { Spool, SpoolLimitError } from 'syke/node'
+import { Spool, SpoolLimitError } from '@thethechad/syke/node'
 
 new Spool({ maxDiskBytes: 2 * 1024 ** 3, minFreeSpace: '20%', onLimit: 'error' })
 ```
@@ -263,7 +263,7 @@ storage, in [OPFS](https://developer.mozilla.org/docs/Web/API/File_System_API/Or
 or, as a fallback, IndexedDB, and read back as the consumer catches up.
 
 ```js
-import { Spool } from 'syke/web'
+import { Spool } from '@thethechad/syke/web'
 
 const res = await fetch('https://example.com/large-dataset.ndjson')
 await res.body.pipeThrough(new Spool()).pipeTo(slowWritable)

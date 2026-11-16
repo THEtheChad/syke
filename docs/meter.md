@@ -7,7 +7,7 @@ download progress bars, or to log how fast a pipeline runs.
 
 ```js
 import { pipeline } from 'node:stream/promises'
-import { Meter } from 'syke/node'
+import { Meter } from '@thethechad/syke/node'
 
 const total = Number(res.headers['content-length'])
 await pipeline(
@@ -18,7 +18,7 @@ await pipeline(
 ```
 
 ```js
-import { Meter } from 'syke/web'
+import { Meter } from '@thethechad/syke/web'
 
 const meter = new Meter()
 await res.body.pipeThrough(meter).pipeTo(writable)

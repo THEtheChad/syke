@@ -8,8 +8,8 @@ dialect.
 ## Install
 
 ```sh
-pnpm add syke
-# or: npm install syke
+pnpm add @thethechad/syke
+# or: npm install @thethechad/syke
 ```
 
 Ships ESM, CommonJS and TypeScript types, with no runtime dependencies.
@@ -18,18 +18,20 @@ Ships ESM, CommonJS and TypeScript types, with no runtime dependencies.
 
 syke comes in two flavours with the same utility names and options:
 
-- **`syke/node`** builds on Node.js streams (`stream.Transform` and friends).
-  Use it in Node.js 22 or later: for small chunks Node streams are several
-  times faster than Web Streams.
-- **`syke/web`** builds on Web Streams (`TransformStream` and friends), so it
-  runs in browsers, Deno, Bun, Cloudflare Workers and Node.js. It never touches
-  a Node.js API.
+- **`@thethechad/syke/node`** builds on Node.js streams (`stream.Transform`
+  and friends). Use it in Node.js 22 or later: for small chunks Node streams
+  are several times faster than Web Streams.
+- **`@thethechad/syke/web`** builds on Web Streams (`TransformStream` and
+  friends), so it runs in browsers, Deno, Bun, Cloudflare Workers and Node.js.
+  It never touches a Node.js API.
+
+The rest of these docs call them `syke/node` and `syke/web` for short.
 
 ```js
-import { LengthCheck } from 'syke/node'
+import { LengthCheck } from '@thethechad/syke/node'
 await pipeline(res, new LengthCheck({ expected: size }), file)
 
-import { LengthCheck } from 'syke/web'
+import { LengthCheck } from '@thethechad/syke/web'
 await res.body.pipeThrough(new LengthCheck({ expected: size })).pipeTo(file)
 ```
 

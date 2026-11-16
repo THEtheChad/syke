@@ -14,7 +14,7 @@ Web Streams have nothing like it.
 
 ```js
 import { pipeline } from 'node:stream/promises'
-import { NdjsonParse, NdjsonStringify, ParallelMap } from 'syke/node'
+import { NdjsonParse, NdjsonStringify, ParallelMap } from '@thethechad/syke/node'
 
 await pipeline(
   createReadStream('orders.ndjson'),
@@ -32,7 +32,7 @@ await pipeline(
 ```
 
 ```js
-import { ParallelMap } from 'syke/web'
+import { ParallelMap } from '@thethechad/syke/web'
 
 const thumbnails = images.pipeThrough(
   new ParallelMap((image, { signal }) => makeThumbnail(image, signal), { concurrency: 4, ordered: false }),

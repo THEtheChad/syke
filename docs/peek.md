@@ -9,7 +9,7 @@ rest of the source, read on demand rather than into memory.
 ```js
 import { pipeline } from 'node:stream/promises'
 import { createGunzip } from 'node:zlib'
-import { peek } from 'syke/node'
+import { peek } from '@thethechad/syke/node'
 
 const { head, stream } = await peek(res, 2)
 const gzipped = head[0] === 0x1f && head[1] === 0x8b
@@ -17,7 +17,7 @@ await pipeline(stream, ...(gzipped ? [createGunzip()] : []), createWriteStream('
 ```
 
 ```js
-import { peek } from 'syke/web'
+import { peek } from '@thethechad/syke/web'
 
 const { head, stream } = await peek(res.body, 2)
 const body = head[0] === 0x1f && head[1] === 0x8b ? stream.pipeThrough(new DecompressionStream('gzip')) : stream

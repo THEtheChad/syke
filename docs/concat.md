@@ -8,14 +8,14 @@ opened until the ones before them have ended.
 
 ```js
 import { pipeline } from 'node:stream/promises'
-import { concat } from 'syke/node'
+import { concat } from '@thethechad/syke/node'
 
 const parts = ['part-1', 'part-2', 'part-3'].map((name) => () => createReadStream(name))
 await pipeline(concat(parts), createWriteStream('joined.bin'))
 ```
 
 ```js
-import { concat } from 'syke/web'
+import { concat } from '@thethechad/syke/web'
 
 const body = concat(urls.map((url) => async () => (await fetch(url)).body))
 await body.pipeTo(writable)

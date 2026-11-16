@@ -15,7 +15,7 @@ sizes:
   64 KiB chunks before a long chain of transforms cuts that overhead.
 
 ```js
-import { Rechunk } from 'syke/node'
+import { Rechunk } from '@thethechad/syke/node'
 
 let partNumber = 0
 for await (const part of file.pipe(new Rechunk({ size: 8 * 1024 ** 2 }))) {
@@ -24,7 +24,7 @@ for await (const part of file.pipe(new Rechunk({ size: 8 * 1024 ** 2 }))) {
 ```
 
 ```js
-import { Rechunk } from 'syke/web'
+import { Rechunk } from '@thethechad/syke/web'
 
 const blocks = res.body.pipeThrough(new Rechunk({ size: 64 * 1024 }))
 ```

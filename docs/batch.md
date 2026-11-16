@@ -9,7 +9,7 @@ instead of sitting in a half-full batch.
 
 ```js
 import { pipeline } from 'node:stream/promises'
-import { Batch, NdjsonParse } from 'syke/node'
+import { Batch, NdjsonParse } from '@thethechad/syke/node'
 
 await pipeline(
   createReadStream('users.ndjson'),
@@ -26,7 +26,7 @@ to the file: at most a few batches are in memory at once, however large the
 input.
 
 ```js
-import { Batch } from 'syke/web'
+import { Batch } from '@thethechad/syke/web'
 
 await events
   .pipeThrough(new Batch({ size: 100, maxWait: 5000 }))

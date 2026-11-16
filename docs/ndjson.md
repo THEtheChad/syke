@@ -13,7 +13,7 @@ takes values and emits UTF-8 bytes.
 ```js
 import { createReadStream, createWriteStream } from 'node:fs'
 import { pipeline } from 'node:stream/promises'
-import { NdjsonParse, NdjsonStringify } from 'syke/node'
+import { NdjsonParse, NdjsonStringify } from '@thethechad/syke/node'
 
 // Export a table.
 await pipeline(db.query('SELECT * FROM users').stream(), new NdjsonStringify(), createWriteStream('users.ndjson'))
@@ -25,7 +25,7 @@ await pipeline(createReadStream('users.ndjson'), new NdjsonParse(), async (users
 ```
 
 ```js
-import { NdjsonParse } from 'syke/web'
+import { NdjsonParse } from '@thethechad/syke/web'
 
 const res = await fetch('/api/events?format=ndjson')
 for await (const event of res.body.pipeThrough(new NdjsonParse())) render(event)
