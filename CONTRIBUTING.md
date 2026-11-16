@@ -83,3 +83,19 @@ Directories are camelCase (`lengthCheck`), doc pages kebab-case (`length-check.m
 TypeScript with `isolatedDeclarations`: annotate exported return types. No
 default exports. Private state uses `#fields`. Prefer short, plain doc
 comments that say why.
+
+## Releasing
+
+Releases publish from GitHub Actions (`.github/workflows/release.yml`) through
+npm trusted publishing, so nobody needs an npm token.
+
+1. Bump `version` in `package.json` and date the entry in `CHANGELOG.md`, in a
+   `chore(release): x.y.z` commit on `main`.
+2. Tag it and push the tag: `git tag -a vx.y.z -m "syke x.y.z" && git push
+   origin vx.y.z`.
+
+The workflow checks that the tag matches `package.json`, runs `pnpm check`,
+and publishes with a provenance attestation. The trusted publisher on npm is
+tied to this repository, the `release.yml` workflow and the `npm`
+environment; renaming any of them breaks publishing until npm's settings are
+updated to match.

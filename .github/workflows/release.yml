@@ -1,0 +1,42 @@
+name: Release
+
+# Publishes to npm when a version tag (v1.2.3) is pushed. Authenticates with
+# npm trusted publishing (OIDC), so no npm token is stored anywhere; npm adds
+# a provenance attestation automatically.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      - name: Check the tag matches package.json
+        run: |
+          version="$(node -p 'require("./package.json").version')"
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version $version"
+            exit 1
+          fi
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+      # npm, not pnpm: npm's CLI does the OIDC token exchange for trusted
+      # publishing. `pnpm check` already ran, so skip prepublishOnly.
+      - run: npm publish --ignore-scripts --access public
