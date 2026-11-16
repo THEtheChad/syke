@@ -1,13 +1,24 @@
 name: Release
 
-# On every push to main, semantic-release reads the Conventional Commits since
+# Runs after the CI workflow finishes on a push to main, and only if the whole
+# CI matrix passed. semantic-release then reads the Conventional Commits since
 # the last tag and, if any call for a release (feat, fix, perf or a breaking
 # change), publishes to npm, tags vX.Y.Z and creates a GitHub release. npm
 # authenticates through trusted publishing (OIDC), so no npm token is stored
 # anywhere, and npm adds a provenance attestation.
+#
+# npm's trusted publisher is bound to this file name (release.yml) and the
+# `npm` environment. Under workflow_run, GITHUB_REF is the default branch, so
+# the OIDC token still carries refs/heads/main and the environment's
+# main-only deployment rule still passes.
+#
+# To retry a failed release, re-run the failed Release run: a re-run replays
+# the same CI event, so it still releases only the commit CI tested.
 
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
 
 permissions:
@@ -18,7 +29,37 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Release only a green push to main whose commit is still main's tip.
+  gate:
+    # A pull request from a branch named main also matches `branches`, so
+    # require a push as well as a green matrix.
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      current: ${{ steps.tip.outputs.current }}
+    steps:
+      # semantic-release refuses to release a commit that is no longer the tip
+      # of main. Skip in that case; the newer commit's own CI run triggers its
+      # own release, which includes this commit.
+      - id: tip
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          main_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)
+          if [ "$main_sha" = "$CI_SHA" ]; then
+            echo "Releasing $CI_SHA, the tip of main."
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Skipping release: CI passed for $CI_SHA, but main has moved on to $main_sha, whose own CI run will release it."
+            echo "current=false" >> "$GITHUB_OUTPUT"
+          fi
+
   release:
+    needs: gate
+    if: needs.gate.outputs.current == 'true'
     runs-on: ubuntu-latest
     environment: npm
     permissions:
@@ -27,8 +68,10 @@ jobs:
       pull-requests: write # comment on pull requests in the release
       id-token: write # npm trusted publishing
     steps:
+      # Release exactly the commit CI tested, not whatever main points at now.
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
@@ -36,9 +79,13 @@ jobs:
           node-version-file: .node-version
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm check
+      # CI already ran `pnpm check` (typecheck, tests, build, package lint) on
+      # this exact commit across the whole matrix, so only the build repeats
+      # here: semantic-release publishes dist/, which isn't committed, and
+      # npm_config_ignore_scripts below skips the prepublishOnly hook.
+      - run: pnpm build
       - run: pnpm exec semantic-release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # `pnpm check` already ran; skip it again in prepublishOnly.
+          # Skip prepublishOnly (`pnpm check`); CI already gated this commit.
           npm_config_ignore_scripts: 'true'

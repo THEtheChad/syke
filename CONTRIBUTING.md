@@ -86,10 +86,16 @@ comments that say why.
 
 ## Releasing
 
-Releases are automatic. On every push to `main`, the release workflow
-(`.github/workflows/release.yml`) runs `pnpm check` and then
-[semantic-release](https://semantic-release.gitbook.io), which reads the
-Conventional Commits since the last tag:
+Releases are automatic, and gated on CI. Every push to `main` runs the CI
+workflow (`pnpm check` on Linux, macOS and Windows × Node 22, 24 and 26).
+Once that whole matrix passes, the release workflow
+(`.github/workflows/release.yml`) checks out the exact commit CI tested,
+builds it and runs [semantic-release](https://semantic-release.gitbook.io).
+If any CI job fails, nothing is released. If `main` has moved on by the time
+CI finishes, the release for that commit is skipped and the newer commit's
+CI run releases it instead. To retry a failed release, re-run the Release
+run on GitHub. semantic-release reads the Conventional Commits since the
+last tag:
 
 | Commits since the last release | Release |
 | --- | --- |
