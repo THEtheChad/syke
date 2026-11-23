@@ -102,16 +102,75 @@ describe.each(runtimes)('merge (%s)', (runtime) => {
     expect(b.returned).toBe(true)
   })
 
+  it('releases the earlier sources when a later one cannot be opened', async () => {
+    const first = probe(runtime)
+    const locked = new ReadableStream()
+    locked.getReader()
+    expect(() => merge([first.stream, locked])).toThrow(TypeError)
+    await settle()
+    expect(first.cancelled).toBe(true)
+
+    const second = probe(runtime)
+    const error = new Error('no iterator')
+    const broken = {
+      [Symbol.iterator]() {
+        throw error
+      },
+    }
+    expect(() => merge([second.stream, broken])).toThrow(error)
+    await settle()
+    expect(second.cancelled).toBe(true)
+  })
+
+  it('reads sources whose Symbol.asyncIterator is present but undefined', async () => {
+    const odd = (items: unknown[]) => ({ [Symbol.asyncIterator]: undefined, *[Symbol.iterator]() { yield* items } })
+    expect((await collect(merge(odd([odd([1, 2]), [3]])))).sort()).toEqual([1, 2, 3])
+  })
+
+  it('merges many sources', async () => {
+    const sources = Array.from({ length: 3000 }, (_, i) => [i, -i - 1])
+    const output = await collect<number>(merge(sources))
+    expect(output).toHaveLength(6000)
+    expect(new Set(output).size).toBe(6000)
+  })
+
   it('rejects invalid sources', () => {
+    expect(() => merge({ [Symbol.iterator]: undefined, [Symbol.asyncIterator]: 1 })).toThrow(TypeError)
     expect(() => merge(42)).toThrow(/syke: sources must be an iterable or async iterable/)
     expect(() => merge([[1], 'text'])).toThrow(/wrap it in an array/)
   })
 })
 
 describe('merge (node)', () => {
+  it('errors the output, and stops every source, when one yields null', async () => {
+    const bad = generator((i) => (i === 2 ? null : i))
+    const other = generator()
+    const { error } = await collectSettled(nodeMerge([bad, other]))
+    expect(error).toBeInstanceOf(TypeError)
+    expect(error.message).toMatch(/syke: a source produced null/)
+    await settle()
+    expect(bad.returned).toBe(true)
+    expect(other.returned).toBe(true)
+  })
+
+  it('errors the output with an Error when a source fails with a falsy value', async () => {
+    async function* failing() {
+      throw undefined
+    }
+    const { error } = await collectSettled(nodeMerge([failing()]))
+    expect(error).toBeInstanceOf(Error)
+    expect(error.message).toMatch(/syke: a source failed with undefined/)
+  })
+
   it('emits in object mode', async () => {
     const output = nodeMerge([[Buffer.from('a')]])
     expect(output.readableObjectMode).toBe(true)
     expect(await collect(output)).toEqual([Buffer.from('a')])
+  })
+})
+
+describe('merge (web)', () => {
+  it('passes null chunks through', async () => {
+    expect(await collect(webMerge([[null]]))).toEqual([null])
   })
 })

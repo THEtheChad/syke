@@ -1,4 +1,4 @@
-import type { Puller } from '../shared/combinator/core.ts'
+import { type Puller, assertSource, noop } from '../shared/combinator/core.ts'
 import { type StreamSource, open, toReadableStream } from '../shared/combinator/web.ts'
 import { ForkCore, assertBufferFactory, forkCount } from './core.ts'
 
@@ -22,12 +22,22 @@ export function fork<T>(source: StreamSource<T>, options: ForkOptions<T> = {}): 
   const count = forkCount(options.count)
   const { buffer } = options
   assertBufferFactory(buffer)
-  // Make the buffers before opening the source, so a bad factory leaks nothing.
-  const pairs = buffer && Array.from({ length: count }, () => checkPair(buffer()))
-  const core = new ForkCore((onError) => open(source, onError) as Puller<T>, count)
+  assertSource(source)
+  const pairs: ReadableWritablePair<T, T>[] = []
+  let core: ForkCore<T>
+  try {
+    // Make the buffers before opening the source, so a bad factory leaves the source untouched.
+    if (buffer) for (let i = 0; i < count; i++) pairs.push(checkPair(buffer()))
+    // Throws for a locked ReadableStream.
+    core = new ForkCore((onError) => open(source, onError) as Puller<T>, count)
+  } catch (error) {
+    // Don't leak the buffers already made.
+    for (const pair of pairs) discard(pair, error)
+    throw error
+  }
   return core.producers.map((producer, i) => {
     const branch = toReadableStream(producer)
-    const pair = pairs?.[i]
+    const pair = pairs[i]
     return pair ? branch.pipeThrough(pair) : branch
   })
 }
@@ -37,4 +47,18 @@ function checkPair<T>(pair: ReadableWritablePair<T, T>): ReadableWritablePair<T,
     throw new TypeError('syke: buffer() must return a { writable, readable } pair')
   }
   return pair
+}
+
+/** Aborts and cancels an unused buffer pair. */
+function discard(pair: ReadableWritablePair<unknown, unknown>, reason: unknown): void {
+  try {
+    pair.writable.abort(reason).catch(noop)
+  } catch {
+    // Nothing more we can release.
+  }
+  try {
+    pair.readable.cancel(reason).catch(noop)
+  } catch {
+    // Nothing more we can release.
+  }
 }

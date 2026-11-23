@@ -87,7 +87,14 @@ export function toReadable<T>(producer: Producer<T>, options: OutputOptions): Re
 
   const outlet: Outlet<T> = {
     push(chunk) {
-      if (!finished) readable.push(chunk)
+      if (finished) return
+      if (chunk === null) {
+        // push(null) would end the output early, silently dropping the rest.
+        // Destroying (not outlet.error) also cancels the producer.
+        readable.destroy(new TypeError('syke: a source produced null, which a Node stream cannot carry'))
+        return
+      }
+      readable.push(chunk)
     },
     end() {
       if (finished) return
@@ -97,7 +104,7 @@ export function toReadable<T>(producer: Producer<T>, options: OutputOptions): Re
     error(error) {
       if (finished) return
       finished = true
-      readable.destroy(error as Error)
+      readable.destroy(toError(error))
     },
   }
 
@@ -119,4 +126,14 @@ export function toReadable<T>(producer: Producer<T>, options: OutputOptions): Re
 
   producer.start(outlet)
   return readable
+}
+
+/**
+ * `destroy()` with a falsy error doesn't emit `'error'`, so the output would
+ * look like it closed early instead of failing. Wraps such a value in an
+ * `Error` (keeping it as `cause`); anything truthy passes through.
+ */
+function toError(error: unknown): Error {
+  if (error) return error as Error
+  return new Error(`syke: a source failed with ${String(error === '' ? '""' : error)}`, { cause: error })
 }

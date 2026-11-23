@@ -44,10 +44,9 @@ export interface Producer<T> {
 
 /** A `Puller` over an iterable or async iterable. */
 export function iterablePuller<T>(source: Iterable<T> | AsyncIterable<T>): Puller<T> {
-  const iterator =
-    Symbol.asyncIterator in source
-      ? (source as AsyncIterable<T>)[Symbol.asyncIterator]()
-      : (source as Iterable<T>)[Symbol.iterator]()
+  const iterator = isAsyncIterable<T>(source)
+    ? source[Symbol.asyncIterator]()
+    : (source as Iterable<T>)[Symbol.iterator]()
   let done = false
   return {
     async next() {
@@ -87,6 +86,20 @@ export function readerPuller<T>(stream: ReadableStream<T>, onError: OnError): Pu
   }
 }
 
+/**
+ * True if `value` has a callable `[Symbol.asyncIterator]`. Checking the
+ * property's type, not just its presence, keeps `{ [Symbol.asyncIterator]:
+ * undefined }` from passing.
+ */
+export function isAsyncIterable<T = unknown>(value: unknown): value is AsyncIterable<T> {
+  return typeof (value as AsyncIterable<unknown> | null)?.[Symbol.asyncIterator] === 'function'
+}
+
+/** True if `value` has a callable `[Symbol.iterator]`. */
+export function isIterable<T = unknown>(value: unknown): value is Iterable<T> {
+  return typeof (value as Iterable<unknown> | null)?.[Symbol.iterator] === 'function'
+}
+
 export function isReadableStream(value: unknown): value is ReadableStream {
   return typeof (value as ReadableStream | null)?.getReader === 'function'
 }
@@ -103,7 +116,7 @@ export function assertSource(source: unknown, name = 'source'): void {
   if (
     source === null ||
     (typeof source !== 'object' && typeof source !== 'function') ||
-    !(Symbol.asyncIterator in source || Symbol.iterator in source || isReadableStream(source))
+    !(isAsyncIterable(source) || isIterable(source) || isReadableStream(source))
   ) {
     throw new TypeError(`syke: ${name} must be a stream or an iterable of chunks, got ${describe(source)}`)
   }
@@ -117,7 +130,7 @@ export function assertIterable(source: unknown, name: string): void {
   if (
     source === null ||
     typeof source !== 'object' ||
-    !(Symbol.asyncIterator in source || Symbol.iterator in source)
+    !(isAsyncIterable(source) || isIterable(source))
   ) {
     throw new TypeError(`syke: ${name} must be an iterable or async iterable, got ${describe(source)}`)
   }

@@ -134,16 +134,121 @@ describe.each(runtimes)('concat (%s)', (runtime) => {
     expect(sources.returned).toBe(true)
   })
 
+  it('releases the array\'s earlier sources when a later one cannot be opened', async () => {
+    const first = probe(runtime)
+    const locked = new ReadableStream()
+    locked.getReader()
+    expect(() => concat([first.stream, locked])).toThrow(TypeError)
+    await settle()
+    expect(first.cancelled).toBe(true)
+
+    const second = probe(runtime)
+    const error = new Error('no iterator')
+    const broken = {
+      [Symbol.iterator]() {
+        throw error
+      },
+    }
+    expect(() => concat([second.stream, () => ['lazy'], broken])).toThrow(error)
+    await settle()
+    expect(second.cancelled).toBe(true)
+  })
+
+  it('takes the items of a non-array iterable as they are reached, not up front', async () => {
+    let taken = 0
+    function* sources() {
+      for (let i = 0; i < 100; i++) {
+        taken++
+        yield [i]
+      }
+    }
+    const r = reader(concat(sources()))
+    expect(await readUpTo(r, 1)).toEqual([0])
+    // Only as far as the output's own read-ahead.
+    expect(taken).toBeLessThan(20)
+    expect(await readUpTo(r, 200)).toHaveLength(99)
+    expect(taken).toBe(100)
+    expect(await collect(concat(new Set([['x'], ['y']])))).toEqual(['x', 'y'])
+  })
+
+  it('releases, with the reason, a source a factory returns after the output was cancelled', async () => {
+    let resolveFactory: (source: unknown) => void = () => {}
+    const factory = () =>
+      new Promise((resolve) => {
+        resolveFactory = resolve
+      })
+    const r = reader(concat([[1], factory]))
+    expect(await readUpTo(r, 10)).toEqual([1])
+    const reason = new Error('stop')
+    await r.cancel(reason)
+    const reasons: unknown[] = []
+    resolveFactory(
+      new ReadableStream({
+        cancel(why) {
+          reasons.push(why)
+        },
+      }),
+    )
+    await settle()
+    expect(reasons).toEqual([reason])
+  })
+
+  it('ignores a factory that returns no source after the output was cancelled', async () => {
+    let resolveFactory: (source: unknown) => void = () => {}
+    const r = reader(concat([[1], () => new Promise((resolve) => (resolveFactory = resolve))]))
+    expect(await readUpTo(r, 10)).toEqual([1])
+    await r.cancel()
+    resolveFactory(42)
+    await settle()
+  })
+
+  it('reads sources whose Symbol.asyncIterator is present but undefined', async () => {
+    const odd = (items: unknown[]) => ({ [Symbol.asyncIterator]: undefined, *[Symbol.iterator]() { yield* items } })
+    expect(await collect(concat(odd([odd([1, 2]), [3]])))).toEqual([1, 2, 3])
+    expect(await collect(concat([odd(['a'])]))).toEqual(['a'])
+  })
+
   it('rejects invalid sources', () => {
+    expect(() => concat({ [Symbol.iterator]: undefined, [Symbol.asyncIterator]: 1 })).toThrow(TypeError)
     expect(() => concat(42)).toThrow(/syke: sources must be an iterable or async iterable/)
     expect(() => concat([[1], 'text'])).toThrow(/wrap it in an array/)
   })
 })
 
 describe('concat (node)', () => {
+  it('errors the output, and stops the source, when a source yields null', async () => {
+    const source = generator((i) => (i === 2 ? null : i))
+    const { output, error } = await collectSettled(nodeConcat([source]))
+    expect(output).toEqual([0, 1])
+    expect(error).toBeInstanceOf(TypeError)
+    expect(error.message).toMatch(/syke: a source produced null/)
+    await settle()
+    expect(source.returned).toBe(true)
+  })
+
+  it('errors the output with an Error when a source fails with a falsy value', async () => {
+    for (const value of [undefined, null, '', 0]) {
+      async function* failing() {
+        yield 1
+        throw value
+      }
+      const { output, error } = await collectSettled(nodeConcat([failing()]))
+      expect(output).toEqual([1])
+      expect(error).toBeInstanceOf(Error)
+      expect(error.message).toMatch(/syke: a source failed with/)
+      expect(error.cause).toBe(value)
+    }
+  })
+
   it('emits in object mode', async () => {
     const output = nodeConcat([[Buffer.from('a')], ['b']])
     expect(output.readableObjectMode).toBe(true)
     expect(await collect(output)).toEqual([Buffer.from('a'), 'b'])
+  })
+})
+
+describe('concat (web)', () => {
+  it('passes null chunks through', async () => {
+    expect(await collect(webConcat([[1, null, 2]]))).toEqual([1, null, 2])
   })
 })

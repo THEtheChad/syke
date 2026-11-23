@@ -54,5 +54,7 @@ one chunk per source is held. A slow source doesn't hold back the others.
   output with a `TypeError`.
 - Cancelling (web) or destroying (Node) the output cancels or destroys every
   source.
+- In `syke/node`, a source yielding `null` errors the output with a `TypeError`
+  (Node streams treat `null` as end-of-stream) instead of ending early.
 - A non-iterable `sources`, or an invalid source in a plain iterable, throws a
   `TypeError` from `merge()`.

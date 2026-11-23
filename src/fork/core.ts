@@ -19,6 +19,8 @@ export class ForkCore<T> {
   readonly #branches: Branch<T>[]
   #reading = false
   #finished = false
+  /** A failure that came before some branch's output stream was made. */
+  #error: { reason: unknown } | null = null
 
   constructor(open: (onError: OnError) => Puller<T>, count: number) {
     this.#branches = Array.from({ length: count }, () => ({ outlet: null, live: true, waiting: null }))
@@ -30,20 +32,21 @@ export class ForkCore<T> {
     return {
       start: (outlet) => {
         branch.outlet = outlet
+        if (this.#error && branch.live) outlet.error(this.#error.reason)
       },
       pull: () =>
         new Promise<void>((resolve) => {
           branch.waiting = resolve
           this.#maybeRead()
         }),
-      cancel: () => {
+      cancel: (reason) => {
         branch.live = false
         this.#release(branch)
         if (this.#branches.some((other) => other.live)) this.#maybeRead()
         else if (!this.#finished) {
           // Every branch is gone: nobody wants the source any more.
           this.#finished = true
-          this.#source.cancel()
+          this.#source.cancel(reason)
         }
       },
     }
@@ -73,8 +76,10 @@ export class ForkCore<T> {
   #fail(error: unknown) {
     if (this.#finished) return
     this.#finished = true
+    this.#error = { reason: error }
     for (const branch of this.#branches) {
       if (!branch.live) continue
+      // A branch not started yet gets the error in start().
       branch.outlet?.error(error)
       this.#release(branch)
     }

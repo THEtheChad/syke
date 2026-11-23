@@ -75,4 +75,6 @@ mutate one.
 - Cancelling (web) or destroying (Node) one branch detaches only that branch;
   the others carry on, no longer held back by it.
 - Once every branch is gone, the source is cancelled (web) or destroyed (Node).
+- In `syke/node`, a source yielding `null` errors every branch with a `TypeError`
+  (Node streams treat `null` as end-of-stream) instead of ending early.
 - Invalid options throw a `TypeError` or `RangeError` from `fork()`.

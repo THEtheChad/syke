@@ -1,5 +1,5 @@
-import { type Duplex, type Readable, pipeline } from 'node:stream'
-import { noop } from '../shared/combinator/core.ts'
+import { type Duplex, type Readable, finished } from 'node:stream'
+import { assertSource } from '../shared/combinator/core.ts'
 import { type StreamSource, mirror, open, toReadable } from '../shared/combinator/node.ts'
 import { ForkCore, assertBufferFactory, forkCount } from './core.ts'
 
@@ -23,18 +23,43 @@ export function fork(source: StreamSource, options: ForkOptions = {}): Readable[
   const count = forkCount(options.count)
   const { buffer } = options
   assertBufferFactory(buffer)
-  // Make the buffers before opening the source, so a bad factory leaks nothing.
-  const throughs = buffer && Array.from({ length: count }, () => checkDuplex(buffer()))
+  assertSource(source)
+  const throughs: Duplex[] = []
+  let core: ForkCore<unknown>
+  try {
+    // Make the buffers before opening the source, so a bad factory leaves the source untouched.
+    if (buffer) for (let i = 0; i < count; i++) throughs.push(checkDuplex(buffer()))
+    core = new ForkCore((onError) => open(source, onError), count)
+  } catch (error) {
+    // Don't leak the buffers already made (a Spool holds a file).
+    for (const through of throughs) through.destroy()
+    throw error
+  }
   const outputOptions = mirror(source)
-  const core = new ForkCore((onError) => open(source, onError), count)
   return core.producers.map((producer, i) => {
     const branch = toReadable(producer, outputOptions)
-    const through = throughs?.[i]
+    const through = throughs[i]
     if (!through) return branch
-    // Errors reach `through` (pipeline destroys it with them); the callback
-    // only stops pipeline reporting them a second time.
-    pipeline(branch, through, noop)
+    connect(branch, through)
     return through
+  })
+}
+
+/**
+ * Pipes `branch` into `through`, tying their lifetimes together: an error in
+ * `branch` destroys `through` with it, and `through` ending or being
+ * destroyed destroys `branch` (detaching it from the fork).
+ *
+ * Unlike `pipeline()`, this adds no `'error'` listener of its own to
+ * `through`, so its errors reach the caller as they would from any stream:
+ * `through.pipe(dest)` with no error handler throws rather than stalling.
+ */
+function connect(branch: Readable, through: Duplex): void {
+  // The branch is ours, so only this listener sees its errors.
+  branch.on('error', (error) => through.destroy(error))
+  branch.pipe(through)
+  finished(through, { error: false }, () => {
+    if (!branch.destroyed) branch.destroy()
   })
 }
 

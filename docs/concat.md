@@ -54,5 +54,7 @@ Each source is read only as fast as the output is consumed.
 - Cancelling (web) or destroying (Node) the output cancels the current source,
   along with any sources from the array that are still waiting, and stops a
   generator of sources (`return()`).
+- In `syke/node`, a source yielding `null` errors the output with a `TypeError`
+  (Node streams treat `null` as end-of-stream) instead of ending early.
 - A non-iterable `sources`, or an invalid source directly in an array, throws a
   `TypeError` from `concat()`.
