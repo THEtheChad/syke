@@ -37,6 +37,13 @@ export type { ThrottleOptions } from './throttle/core.ts'
 export { Throttle } from './throttle/web.ts'
 export { SpoolLimitError, type MinFreeSpace } from './spool/core/limits.ts'
 export { type Codec, jsonCodec, SpoolCodecError } from './spool/core/records.ts'
-export { Spool, type SpoolOptions, type SpoolSource } from './spool/web/Spool.ts'
+export {
+  Spool,
+  type ByteSpoolOptions,
+  type ObjectSpoolOptions,
+  type SpoolBaseOptions,
+  type SpoolOptions,
+  type SpoolSource,
+} from './spool/web/Spool.ts'
 export type { SpoolStorageChoice } from './spool/web/openStore.ts'
 export { SpoolStorageError, type SpoolStorage } from './spool/web/store.ts'

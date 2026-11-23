@@ -1,5 +1,5 @@
 import { resolveObjectURL } from 'node:buffer'
-import { IDBFactory, IDBKeyRange } from 'fake-indexeddb'
+import { IDBFactory, IDBKeyRange, IDBObjectStore as FakeObjectStore } from 'fake-indexeddb'
 import { afterEach, vi } from 'vitest'
 
 /**
@@ -22,6 +22,12 @@ export interface FakeBrowserOptions {
   quota?: number
   /** Usage by other data, in bytes, on top of OPFS files. */
   usage?: number
+  /** The worker's `getDirectory()` throws `SecurityError`, as in some private windows. */
+  opfsSecurityError?: boolean
+  /** The worker's first N `getDirectory()` calls fail with a passing `UnknownError`. */
+  opfsGetDirectoryFailures?: number
+  /** `navigator.locks.request()` rejects with `SecurityError`, as in an opaque origin. */
+  locksSecurityError?: boolean
 }
 
 export interface FakeBrowser {
@@ -35,6 +41,17 @@ export interface FakeBrowser {
   idbRecords(): Promise<number>
   /** Calls to `navigator.storage.estimate()`. */
   estimates: number
+  /** Workers ever created. */
+  workersStarted: number
+  /**
+   * How many coming IndexedDB `put()`s fail, asynchronously (the request
+   * errors and the transaction aborts), with `idbPutError`.
+   */
+  idbPutFailures: number
+  /** The error name failing `put()`s get. Defaults to `QuotaExceededError`. */
+  idbPutError: string
+  /** OPFS `truncate()` calls. */
+  truncates: number
 }
 
 let current: FakeBrowser | null = null
@@ -47,6 +64,10 @@ export function installFakeBrowser(options: FakeBrowserOptions = {}): FakeBrowse
     options,
     workers: new Set(),
     estimates: 0,
+    workersStarted: 0,
+    idbPutFailures: 0,
+    idbPutError: 'QuotaExceededError',
+    truncates: 0,
     opfsFiles: () => [...root.files.keys()],
     idbRecords: () => countRecords(factory),
   }
@@ -66,7 +87,42 @@ export function installFakeBrowser(options: FakeBrowserOptions = {}): FakeBrowse
       },
     },
   })
+  if (options.locksSecurityError) {
+    Object.defineProperty(navigator, 'locks', {
+      configurable: true,
+      value: {
+        request: async () => {
+          throw new DOMException('the origin is opaque', 'SecurityError')
+        },
+        query: async () => {
+          throw new DOMException('the origin is opaque', 'SecurityError')
+        },
+      },
+    })
+  }
   return browser
+}
+
+// Makes IndexedDB writes fail on demand the way a full disk does: the request
+// fails later, its error event reaches the transaction (whose `error` is
+// still null then), and the transaction aborts with that error.
+type RawStore = { storeRecord: (...args: unknown[]) => unknown }
+const originalPut = FakeObjectStore.prototype.put
+FakeObjectStore.prototype.put = function (this: IDBObjectStore & { _rawObjectStore: RawStore }, ...args) {
+  const browser = current
+  if (!browser || browser.idbPutFailures <= 0) return originalPut.apply(this, args)
+  browser.idbPutFailures--
+  const raw = this._rawObjectStore
+  const storeRecord = raw.storeRecord
+  const name = browser.idbPutError
+  raw.storeRecord = () => {
+    throw new DOMException('the write failed', name)
+  }
+  try {
+    return originalPut.apply(this, args)
+  } finally {
+    raw.storeRecord = storeRecord
+  }
 }
 
 /** Installs a fresh fake browser around each test and removes it after. */
@@ -76,6 +132,8 @@ export function useFakeBrowser(): void {
     current = null
     vi.unstubAllGlobals()
     delete (navigator as { storage?: unknown }).storage
+    // Only an own property (a stub); Node's own `navigator.locks` is on the prototype.
+    if (Object.hasOwn(navigator, 'locks')) delete (navigator as { locks?: unknown }).locks
   })
 }
 
@@ -216,6 +274,12 @@ export class FakeSyncAccessHandle {
     return this.#file.size
   }
 
+  truncate(size: number): void {
+    if (current) current.truncates++
+    this.#file.size = Math.min(this.#file.size, size)
+    if (size === 0) this.#file.data = new Uint8Array(0)
+  }
+
   flush(): void {}
 
   close(): void {
@@ -234,6 +298,7 @@ export class FakeWorker extends EventTarget {
     super()
     const browser = current as FakeBrowser
     browser.workers.add(this)
+    browser.workersStarted++
     if (browser.options.workerBlocked) {
       this.#started = Promise.resolve()
       setTimeout(() => {
@@ -246,11 +311,18 @@ export class FakeWorker extends EventTarget {
       navigator: {
         storage: {
           // The worker's view of OPFS, so terminate() can close its handles.
-          getDirectory: async () => ({
+          getDirectory: async () => {
+            if (browser.options.opfsSecurityError) throw new DOMException('OPFS is off here', 'SecurityError')
+            if ((browser.options.opfsGetDirectoryFailures ?? 0) > 0) {
+              browser.options.opfsGetDirectoryFailures = (browser.options.opfsGetDirectoryFailures ?? 0) - 1
+              throw new DOMException('busy', 'UnknownError')
+            }
+            return {
             getFileHandle: (name: string, options?: { create?: boolean }) =>
               browser.root.getFileHandle(name, options, this.#handles),
             removeEntry: (name: string) => browser.root.removeEntry(name),
-          }),
+            }
+          },
         },
       },
       FileSystemFileHandle: browser.options.noSyncHandles ? class {} : FakeFileHandle,

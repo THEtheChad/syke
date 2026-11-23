@@ -6,26 +6,61 @@
 //   pnpm test:browser --serve            only serve; open the printed URL yourself
 //
 // Browser executables come from SYKE_EDGE, SYKE_CHROME and SYKE_FIREFOX, or
-// default to Windows installs reached from WSL (where these tests were run).
-// Results are written to .browser-test/results/<browser>.json.
+// are looked for: Windows installs reached from WSL (where these tests were
+// first run), then the usual Linux binaries on PATH, then macOS apps. The run
+// fails if no browser is found. Results are written to
+// .browser-test/results/<browser>.json.
 import { execFileSync, spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { extname, join, resolve } from 'node:path'
+import { delimiter, extname, join, resolve } from 'node:path'
 
 const root = resolve(import.meta.dirname, '..')
 const out = join(root, '.browser-test')
 const PAGE_TIMEOUT_MS = 10 * 60 * 1000
+// One host for both listening and the URL the browsers load: `localhost` may
+// resolve to ::1 first, which a server on 127.0.0.1 doesn't answer. 127.0.0.1
+// is a secure context, as OPFS needs.
+const HOST = '127.0.0.1'
 
 const WINDOWS = '/mnt/c/Windows/System32'
 const POWERSHELL = `${WINDOWS}/WindowsPowerShell/v1.0/powershell.exe`
-const windowsLocalAppData = () =>
-  existsSync(`${WINDOWS}/cmd.exe`)
-    ? wslPath(execFileSync(`${WINDOWS}/cmd.exe`, ['/c', 'echo %LOCALAPPDATA%'], { cwd: '/mnt/c', encoding: 'utf8' }).trim())
-    : null
+let localAppData
+/** %LOCALAPPDATA% as a WSL path, or null when not under WSL. */
+const windowsLocalAppData = () => {
+  if (localAppData !== undefined) return localAppData
+  localAppData = null
+  if (existsSync(`${WINDOWS}/cmd.exe`)) {
+    try {
+      const windowsPath = execFileSync(`${WINDOWS}/cmd.exe`, ['/c', 'echo %LOCALAPPDATA%'], {
+        cwd: '/mnt/c',
+        encoding: 'utf8',
+      }).trim()
+      localAppData = wslPath(windowsPath)
+    } catch {
+      localAppData = null
+    }
+  }
+  return localAppData
+}
+/** A path under %LOCALAPPDATA%, or null when there is none. */
+const underLocalAppData = (path) => {
+  const base = windowsLocalAppData()
+  return base ? `${base}/${path}` : null
+}
+/** The first of `names` found on PATH, or null. */
+const onPath = (...names) => {
+  for (const dir of (process.env.PATH ?? '').split(delimiter)) {
+    for (const name of names) {
+      const candidate = join(dir, name)
+      if (dir && existsSync(candidate)) return candidate
+    }
+  }
+  return null
+}
 
 const chromiumArgs = (profile, url, extra = []) => [
   '--headless=new',
@@ -39,18 +74,30 @@ const chromiumArgs = (profile, url, extra = []) => [
 const browsers = {
   edge: {
     env: 'SYKE_EDGE',
-    default: '/mnt/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
+    candidates: () => [
+      '/mnt/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
+      onPath('microsoft-edge', 'microsoft-edge-stable'),
+      '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+    ],
     args: (profile, url) => chromiumArgs(profile, url),
   },
   chrome: {
     env: 'SYKE_CHROME',
-    default: () => `${windowsLocalAppData()}/chrome-for-testing/157.0.8103.78/chrome-win64/chrome.exe`,
+    candidates: () => [
+      underLocalAppData('chrome-for-testing/157.0.8103.78/chrome-win64/chrome.exe'),
+      onPath('google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser'),
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    ],
     // An unzipped Chrome for Testing lacks the folder permissions this sandbox needs.
     args: (profile, url) => chromiumArgs(profile, url, ['--disable-features=NetworkServiceSandbox']),
   },
   firefox: {
     env: 'SYKE_FIREFOX',
-    default: () => `${windowsLocalAppData()}/Firefox/firefox.exe`,
+    candidates: () => [
+      underLocalAppData('Firefox/firefox.exe'),
+      onPath('firefox'),
+      '/Applications/Firefox.app/Contents/MacOS/firefox',
+    ],
     args: (profile, url) => ['-headless', '-no-remote', '-new-instance', '-profile', profile, url],
     async prepare(profileDir) {
       await writeFile(
@@ -86,9 +133,17 @@ async function buildMinified() {
   })
 }
 
+/** The browser's executable: its env var if set, else the first candidate that exists, else null. */
+function findBrowser(browser) {
+  const fromEnv = process.env[browser.env]
+  if (fromEnv) return fromEnv
+  return browser.candidates().find((candidate) => candidate && existsSync(candidate)) ?? null
+}
+
 // --- Server ------------------------------------------------------------------
 
 const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.mjs': 'text/javascript' }
+/** Settles the results of the browser now running: `{ resolve, reject }`, or null. */
 let deliver = null
 
 function serve() {
@@ -102,12 +157,23 @@ function serve() {
     '/frame.js': 'test/browser/frame.js',
   }
   const server = createServer(async (req, res) => {
-    const { pathname } = new URL(req.url ?? '/', 'http://localhost')
+    const { pathname } = new URL(req.url ?? '/', `http://${HOST}`)
     if (req.method === 'POST' && pathname === '/results') {
-      let body = ''
-      for await (const chunk of req) body += chunk
+      // Decoded once, whole: a multi-byte character may straddle two chunks.
+      const chunks = []
+      for await (const chunk of req) chunks.push(chunk)
+      const body = Buffer.concat(chunks).toString('utf8')
+      let results
+      try {
+        results = JSON.parse(body)
+      } catch (error) {
+        res.statusCode = 400
+        res.end('bad results')
+        deliver?.reject(new Error(`the page posted results that are not JSON: ${error.message}`))
+        return
+      }
       res.end('ok')
-      deliver?.(JSON.parse(body))
+      deliver?.resolve(results)
       return
     }
     let file = routes[pathname]
@@ -123,7 +189,10 @@ function serve() {
     if (pathname === '/csp.html') res.setHeader('content-security-policy', "worker-src 'self'")
     res.end(await readFile(join(root, file)))
   })
-  return new Promise((done) => server.listen(0, '127.0.0.1', () => done(server)))
+  return new Promise((done, fail) => {
+    server.once('error', fail)
+    server.listen(0, HOST, () => done(server))
+  })
 }
 
 // --- Browsers ----------------------------------------------------------------
@@ -137,18 +206,29 @@ async function runBrowser(name, exe, baseUrl) {
   await browser.prepare?.(profileDir)
   const profile = onWindows ? windowsPathOf(profileDir) : profileDir
 
-  const results = new Promise((done, fail) => {
-    deliver = done
-    setTimeout(() => fail(new Error(`${name}: no results after ${PAGE_TIMEOUT_MS / 1000} s`)), PAGE_TIMEOUT_MS).unref()
+  let timer
+  const results = new Promise((resolve, reject) => {
+    deliver = { resolve, reject }
+    timer = setTimeout(() => reject(new Error(`${name}: no results after ${PAGE_TIMEOUT_MS / 1000} s`)), PAGE_TIMEOUT_MS)
+    timer.unref()
   })
   const child = spawn(exe, browser.args(profile, `${baseUrl}/?auto&browser=${name}`), {
     cwd: onWindows ? '/mnt/c' : undefined,
     stdio: 'ignore',
   })
-  const exited = new Promise((done) => child.once('exit', done))
+  // A browser that can't start, or quits before posting, never will: don't wait out the timeout.
+  child.once('error', (error) => deliver?.reject(new Error(`${name}: could not start ${exe}: ${error.message}`)))
+  const exited = new Promise((done) => child.once('exit', (code, signal) => done({ code, signal })))
+  // On Windows the launcher may exit at once and leave the browser running, so only trust exits elsewhere.
+  if (!onWindows) {
+    void exited.then(({ code, signal }) =>
+      deliver?.reject(new Error(`${name}: the browser exited (${signal ?? `code ${code}`}) before posting results`)),
+    )
+  }
   try {
     return await results
   } finally {
+    clearTimeout(timer)
     deliver = null
     if (onWindows) {
       // The WSL side of the process doesn't own the browser's Windows processes.
@@ -190,22 +270,24 @@ const args = process.argv.slice(2)
 await mkdir(out, { recursive: true })
 await buildMinified()
 const server = await serve()
-const baseUrl = `http://localhost:${server.address().port}`
+const baseUrl = `http://${HOST}:${server.address().port}`
 
 if (args.includes('--serve')) {
   console.log(`Serving the browser tests at ${baseUrl}/`)
 } else {
   const names = args.length > 0 ? args : Object.keys(browsers)
   let failed = false
+  let ran = 0
   for (const name of names) {
     const browser = browsers[name]
     if (!browser) throw new Error(`unknown browser ${name}; expected ${Object.keys(browsers).join(', ')}`)
-    const exe = process.env[browser.env] ?? (typeof browser.default === 'function' ? browser.default() : browser.default)
+    const exe = findBrowser(browser)
     if (!exe || !existsSync(exe)) {
-      console.log(`\n${name}: not found (${exe}); set ${browser.env}`)
+      console.log(`\n${name}: not found${exe ? ` (${exe})` : ''}; set ${browser.env}`)
       if (args.length > 0) failed = true
       continue
     }
+    ran++
     try {
       const results = await runBrowser(name, exe, baseUrl)
       await mkdir(join(out, 'results'), { recursive: true })
@@ -218,6 +300,10 @@ if (args.includes('--serve')) {
     }
   }
   server.close()
+  if (ran === 0) {
+    console.log(`\nNo browser found to test in; set ${Object.values(browsers).map((browser) => browser.env).join(', ')}`)
+    failed = true
+  }
   console.log(failed ? '\nBrowser tests FAILED' : '\nBrowser tests passed')
   process.exitCode = failed ? 1 : 0
 }

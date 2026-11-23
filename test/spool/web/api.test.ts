@@ -3,9 +3,10 @@ import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { ReadableStream as NodeReadableStream } from 'node:stream/web'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, expectTypeOf, it, vi } from 'vitest'
 import { chunk } from '../../harness.ts'
 import { freshPage, installFakeBrowser, useFakeBrowser, waitFor } from './fakeBrowser.ts'
+import type { Codec, Spool as SpoolClass } from '../../../src/web.ts'
 
 const KiB = 1024
 const MiB = 1024 * KiB
@@ -207,6 +208,215 @@ describe('Spool in the browser', () => {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'inherit'],
       timeout: 20_000,
+    })
+    const result = JSON.parse(output)
+    expect(result.before).toBeGreaterThan(0)
+    expect(result.after).toBe(0)
+  })
+})
+
+describe('Spool.from() edge cases', () => {
+  it('throws at once for a locked ReadableStream instead of hanging', async () => {
+    installFakeBrowser()
+    const { Spool } = await freshPage()
+    const stream = new ReadableStream<Uint8Array>()
+    stream.getReader()
+    expect(() => Spool.from(stream)).toThrow(/locked/)
+  })
+
+  it('throws a TypeError for something it cannot read', async () => {
+    installFakeBrowser()
+    const { Spool } = await freshPage()
+    expect(() => Spool.from(42 as never)).toThrow(/needs a ReadableStream, an iterable or an async iterable/)
+    expect(() => Spool.from({ [Symbol.asyncIterator]: 'no' } as never)).toThrow(TypeError)
+  })
+
+  it("calls the iterator's return() with no arguments when cancelled", async () => {
+    installFakeBrowser()
+    const { Spool } = await freshPage()
+    const returned = vi.fn(async (..._args: unknown[]) => ({ done: true as const, value: undefined }))
+    let n = 0
+    const iterator: AsyncIterableIterator<Uint8Array> = {
+      next: async () => ({ done: false, value: new Uint8Array([n++]) }),
+      return: returned,
+      [Symbol.asyncIterator]() {
+        return this
+      },
+    }
+    const spool = Spool.from(iterator)
+    const reader = spool.readable.getReader()
+    await reader.read()
+    await reader.cancel(new Error('enough'))
+    await waitFor(() => returned.mock.calls.length > 0)
+    expect(returned).toHaveBeenCalledWith()
+  })
+})
+
+describe('chunk handling', () => {
+  it('drops empty chunks rather than queueing them', async () => {
+    installFakeBrowser()
+    const { Spool } = await freshPage()
+    const spool = new Spool({ memoryThreshold: 1024 })
+    const writer = spool.writable.getWriter()
+    await writer.write(new Uint8Array([1]))
+    // Empty chunks cost nothing against memoryThreshold, so they must not be queued at all.
+    for (let i = 0; i < 10_000; i++) await writer.write(new Uint8Array(0))
+    await writer.write(new Uint8Array([2]))
+    await writer.close()
+    const out = await readAll(spool.readable)
+    expect(out.map((piece) => [...piece])).toEqual([[1], [2]])
+    expect(spool.storage).toBeNull()
+  })
+
+  it('decodes spilled records one at a time, failing with SpoolCodecError at the bad one', async () => {
+    installFakeBrowser()
+    const { Spool, SpoolCodecError, jsonCodec } = await freshPage()
+    const codec: Codec<{ i: number }> = {
+      encode: (value) => jsonCodec.encode(value),
+      decode: (bytes) => {
+        const value = jsonCodec.decode(bytes) as { i: number }
+        if (value.i === 500) throw new Error('bad record')
+        return value
+      },
+    }
+    const spool = new Spool<{ i: number }>({ storage: 'indexeddb', objectMode: true, codec })
+    const writer = spool.writable.getWriter()
+    for (let i = 0; i < 1000; i++) await writer.write({ i })
+    await writer.close()
+    const reader = spool.readable.getReader()
+    const seen: number[] = []
+    const error = await (async () => {
+      for (;;) {
+        const { value, done } = await reader.read()
+        if (done) return null
+        seen.push(value.i)
+      }
+    })().catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(SpoolCodecError)
+    expect(seen).toEqual(Array.from({ length: 500 }, (_, i) => i))
+    await spool.closed
+  })
+
+  it('does not pin large storage buffers in the small chunks it emits', async () => {
+    installFakeBrowser()
+    const { Spool } = await freshPage()
+    const data = randomBytes(3 * MiB)
+    const spool = new Spool({ storage: 'indexeddb', chunkSize: 16 * KiB })
+    const writer = spool.writable.getWriter()
+    for (const piece of chunk(data, 64 * KiB)) await writer.write(piece)
+    await writer.close()
+    const out = await readAll(spool.readable)
+    expect(Buffer.concat(out).equals(data)).toBe(true)
+    for (const piece of out.slice(1)) expect(piece.buffer.byteLength).toBeLessThanOrEqual(2 * piece.byteLength)
+  })
+})
+
+describe('the OPFS worker', () => {
+  it('retries getDirectory() after a passing failure instead of caching it for every spool', async () => {
+    installFakeBrowser({ opfsGetDirectoryFailures: 1 })
+    const { Spool } = await freshPage()
+    const a = new Spool()
+    const b = new Spool()
+    const writers = [a.writable.getWriter(), b.writable.getWriter()]
+    // Both open storage at once, sharing the worker; the first open fails.
+    await Promise.all(
+      writers.map(async (writer) => {
+        for (const piece of chunk(randomBytes(2 * MiB), 64 * KiB)) await writer.write(piece)
+      }),
+    )
+    await waitFor(() => a.storage !== null && b.storage !== null)
+    expect([a.storage, b.storage].sort()).toEqual(['indexeddb', 'opfs'])
+    await a.readable.cancel()
+    await b.readable.cancel()
+  })
+
+  it('fails the spool, rather than hang, when a worker reply cannot be deserialized', async () => {
+    const browser = installFakeBrowser()
+    const { Spool } = await freshPage()
+    const spool = new Spool({ storage: 'opfs' })
+    const writer = spool.writable.getWriter()
+    for (const piece of chunk(randomBytes(2 * MiB), 64 * KiB)) await writer.write(piece)
+    await waitFor(() => browser.opfsFiles().length === 1)
+    for (const worker of browser.workers) worker.dispatchEvent(new MessageEvent('messageerror'))
+    expect(browser.workers.size).toBe(0)
+    await expect(readAll(spool.readable)).rejects.toThrow(/could not be read|terminated/)
+  })
+})
+
+describe('Spool types', () => {
+  it('types byte and object-mode spools', () => {
+    expectTypeOf<SpoolClass>().toExtend<ReadableWritablePair<Uint8Array, Uint8Array>>()
+    expectTypeOf<SpoolClass<{ a: number }>>().toExtend<ReadableWritablePair<{ a: number }, { a: number }>>()
+    // Typechecked only (pnpm typecheck): a codec needs objectMode, and records need it too.
+    const check = (S: typeof SpoolClass, codec: Codec<{ a: number }>) => {
+      expectTypeOf(S.from([new Uint8Array(1)])).toEqualTypeOf<SpoolClass<Uint8Array>>()
+      const records = S.from([{ a: 1 }], { objectMode: true })
+      expectTypeOf(records).toEqualTypeOf<SpoolClass<{ a: number }>>()
+      expectTypeOf(new S({ objectMode: true, codec })).toEqualTypeOf<SpoolClass<{ a: number }>>()
+      // @ts-expect-error a codec without objectMode
+      new S({ codec })
+      // @ts-expect-error records without objectMode
+      S.from([{ a: 1 }])
+    }
+    expect(typeof check).toBe('function')
+  })
+})
+
+describe('garbage collection while paused', () => {
+  it('collects a spool paused at minFreeSpace (polling the quota) and deletes its storage', () => {
+    const entry = pathToFileURL(join(import.meta.dirname, '../../../src/web.ts')).href
+    const child = `
+      import { IDBFactory, IDBKeyRange } from 'fake-indexeddb'
+      globalThis.indexedDB = new IDBFactory()
+      globalThis.IDBKeyRange = IDBKeyRange
+      const MiB = 1024 * 1024
+      // 4 MiB quota, 1 MiB used besides the spool's 1 MiB records, a 25%
+      // floor: the spool stays paused at 2 MiB stored.
+      Object.defineProperty(navigator, 'storage', {
+        configurable: true,
+        value: { estimate: async () => ({ quota: 4 * MiB, usage: MiB + (await count()) * MiB }) },
+      })
+      const { Spool } = await import(${JSON.stringify(entry)})
+
+      const count = async () => {
+        // Don't create the database before the spool does.
+        if (!(await indexedDB.databases()).some((d) => d.name === 'syke-spool')) return 0
+        return countRecords()
+      }
+      const countRecords = () => new Promise((resolve) => {
+        const open = indexedDB.open('syke-spool')
+        open.onsuccess = () => {
+          const req = open.result.transaction('chunks').objectStore('chunks').count()
+          req.onsuccess = () => { open.result.close(); resolve(req.result) }
+        }
+      })
+
+      // A spool paused at the floor, with no consumer, dropped without being ended or cancelled.
+      async function abandon() {
+        const spool = new Spool({ storage: 'indexeddb', minFreeSpace: '25%' })
+        const writer = spool.writable.getWriter()
+        for (let i = 0; i < 80; i++) writer.write(new Uint8Array(64 * 1024)).catch(() => {})
+        while ((await count()) < 2) await new Promise((resolve) => setTimeout(resolve, 5))
+        // Paused: quota polls have come and gone, and the source is held back.
+        await new Promise((resolve) => setTimeout(resolve, 1500))
+        if ((await count()) !== 2) throw new Error('the spool did not pause at the floor')
+      }
+
+      await abandon()
+      const before = await count()
+      let after = before
+      for (let i = 0; i < 100 && after > 0; i++) {
+        globalThis.gc()
+        await new Promise((resolve) => setTimeout(resolve, 30))
+        after = await count()
+      }
+      console.log(JSON.stringify({ before, after }))
+      process.exit(0)
+    `
+    const output = execFileSync(process.execPath, ['--expose-gc', '--input-type=module', '-e', child], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'inherit'],
+      timeout: 30_000,
     })
     const result = JSON.parse(output)
     expect(result.before).toBeGreaterThan(0)
