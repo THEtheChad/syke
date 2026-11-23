@@ -45,8 +45,8 @@ returns bytes or a hex string. Node's `crypto.createHash()` result fits too.
 
 | Option | Default | Description |
 | ------ | ------- | ----------- |
-| `algorithm` | | Algorithm name (see above). Give this or `hasher`. |
-| `hasher` | | An incremental hash, or a promise of one. Give this or `algorithm`. |
+| `algorithm` | | Algorithm name (see above). Give this or `hasher`, not both. |
+| `hasher` | | An incremental hash, or a promise of one. Give this or `algorithm`, not both. |
 | `expected` | | The digest the stream must have: a string in `encoding`, or raw bytes. |
 | `encoding` | `'hex'` | `'hex'` or `'base64'`: how `digest` is encoded and a string `expected` is read. Hex comparison ignores case. |
 
@@ -64,3 +64,6 @@ so a consumer that waits for the end before committing never commits
 corrupted data. Bytes are passed on as they arrive, so the consumer will
 already have seen them; pair `Digest` with a temporary destination you
 discard on error.
+
+A chunk that isn't a `Uint8Array` (a Node `Buffer` is one) fails the stream
+with a `TypeError`.

@@ -1,8 +1,20 @@
 import { Transform, type TransformOptions } from 'node:stream'
-import { type Sink, type Transformer, settle } from './transformer.ts'
+import { type Sink, type Transformer, settle, toFailure } from './transformer.ts'
 
 /** Stream options every Node utility passes through to `stream.Transform`. */
 export type NodeStreamOptions = Pick<TransformOptions, 'highWaterMark' | 'signal'>
+
+/**
+ * Picks just the `NodeStreamOptions` out of a caller's options, so a stray
+ * property at runtime (`objectMode`, `autoDestroy`, `transform`, ...) can't
+ * reach `stream.Transform` and change how the utility behaves.
+ */
+export function streamOptions(options: NodeStreamOptions | undefined): NodeStreamOptions {
+  const picked: NodeStreamOptions = {}
+  if (options?.highWaterMark !== undefined) picked.highWaterMark = options.highWaterMark
+  if (options?.signal !== undefined) picked.signal = options.signal
+  return picked
+}
 
 /** A Node `Transform` driven by a runtime-neutral `Transformer`. */
 export class CoreTransform<I, O> extends Transform {
@@ -25,9 +37,11 @@ export class CoreTransform<I, O> extends Transform {
         this.push(null)
         this.#close()
       },
-      error: (error) => this.destroy(error),
+      error: (error) => this.destroy(toFailure(error)),
       get full() {
-        return stream.readableLength >= stream.readableHighWaterMark
+        // With a high-water mark of 0 an empty buffer is not "full": only
+        // output that's actually waiting for a reader is backpressure.
+        return stream.readableLength >= Math.max(1, stream.readableHighWaterMark)
       },
     }
     core.start?.(this.#sink)

@@ -31,10 +31,12 @@ for await (const line of res.body.pipeThrough(new Lines())) render(line)
   doesn't produce an empty line after it. Empty lines in the middle are
   emitted as `''`.
 - **Decoding:** a streaming `TextDecoder`, so a multi-byte character split
-  across chunks decodes correctly. A UTF-8 (or UTF-16) byte order mark is
-  dropped. Invalid bytes become `U+FFFD`, as `TextDecoder` does.
-- **Strings (`syke/node` only):** a string chunk is taken as text that's
-  already decoded. The output side is in object mode, one string per chunk.
+  across chunks decodes correctly. A leading UTF-8 (or UTF-16) byte order mark
+  is dropped for both byte and string input. Invalid bytes become `U+FFFD`, as
+  `TextDecoder` does.
+- **Strings:** a string chunk is taken as text that's already decoded (in both
+  `syke/node` and `syke/web`, e.g. after `TextDecoderStream`). In `syke/node`
+  the output side is in object mode, one string per chunk.
 - **Long lines** are joined once from their pieces, so a line spanning many
   chunks costs linear time.
 

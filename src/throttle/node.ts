@@ -1,4 +1,4 @@
-import { CoreTransform, type NodeStreamOptions } from '../shared/node.ts'
+import { CoreTransform, type NodeStreamOptions, streamOptions } from '../shared/node.ts'
 import { ThrottleCore, type ThrottleOptions } from './core.ts'
 
 /**
@@ -8,8 +8,8 @@ import { ThrottleCore, type ThrottleOptions } from './core.ts'
  */
 export class Throttle<T = Uint8Array> extends CoreTransform<T, T> {
   constructor(options: ThrottleOptions & NodeStreamOptions) {
-    const { bytesPerSecond, itemsPerSecond, burst, ...streamOptions } = options
+    const { bytesPerSecond, itemsPerSecond, burst } = options
     const core = new ThrottleCore<T>({ bytesPerSecond, itemsPerSecond, burst } as ThrottleOptions)
-    super(core, { ...streamOptions, objectMode: itemsPerSecond !== undefined })
+    super(core, { ...streamOptions(options), objectMode: itemsPerSecond !== undefined })
   }
 }

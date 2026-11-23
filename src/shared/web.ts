@@ -1,4 +1,4 @@
-import type { Sink, Transformer as SykeTransformer } from './transformer.ts'
+import { type Sink, type Transformer as SykeTransformer, toFailure } from './transformer.ts'
 
 /** A web `TransformStream` driven by a runtime-neutral `Transformer`. */
 export class CoreTransformStream<I, O> extends TransformStream<I, O> {
@@ -21,7 +21,8 @@ export class CoreTransformStream<I, O> extends TransformStream<I, O> {
         await step()
       } catch (error) {
         close()
-        throw error
+        // Same failure as in Node, where a falsy error would read as success.
+        throw toFailure(error)
       }
     }
 
@@ -43,7 +44,7 @@ export class CoreTransformStream<I, O> extends TransformStream<I, O> {
       },
       error(error) {
         close()
-        controller.error(error)
+        controller.error(toFailure(error))
       },
       get full() {
         return (controller.desiredSize ?? 1) <= 0

@@ -1,4 +1,5 @@
-import type { Sink, Transformer } from '../shared/transformer.ts'
+import { assertBytes } from '../shared/bytes.ts'
+import { MAX_TIMEOUT_MS, type Sink, type Transformer } from '../shared/transformer.ts'
 import { positiveNumber } from '../shared/validate.ts'
 
 export type ThrottleOptions = {
@@ -51,7 +52,11 @@ export class ThrottleCore<T> implements Transformer<T, T> {
   }
 
   transform(chunk: T, sink: Sink<T>): void | Promise<void> {
-    const cost = this.#items ? 1 : (chunk as Uint8Array).byteLength
+    let cost = 1
+    if (!this.#items) {
+      assertBytes('Throttle with bytesPerSecond', chunk)
+      cost = chunk.byteLength
+    }
     const need = Math.min(cost, this.#burst)
     this.#refill()
     if (this.#tokens >= need) {
@@ -59,18 +64,27 @@ export class ThrottleCore<T> implements Transformer<T, T> {
       sink.push(chunk)
       return
     }
-    const wait = Math.ceil((need - this.#tokens) / this.#perMs)
+    let wait = Math.ceil((need - this.#tokens) / this.#perMs)
     // Holding the promise holds back the source until the chunk may pass.
     return new Promise<void>((resolve) => {
       this.#release = resolve
-      this.#timer = setTimeout(() => {
-        this.#timer = undefined
-        this.#release = undefined
-        this.#refill()
-        this.#tokens -= cost
-        sink.push(chunk)
-        resolve()
-      }, wait)
+      // A wait longer than setTimeout can take is served in steps.
+      const step = () => {
+        if (wait > MAX_TIMEOUT_MS) {
+          wait -= MAX_TIMEOUT_MS
+          this.#timer = setTimeout(step, MAX_TIMEOUT_MS)
+          return
+        }
+        this.#timer = setTimeout(() => {
+          this.#timer = undefined
+          this.#release = undefined
+          this.#refill()
+          this.#tokens -= cost
+          sink.push(chunk)
+          resolve()
+        }, wait)
+      }
+      step()
     })
   }
 

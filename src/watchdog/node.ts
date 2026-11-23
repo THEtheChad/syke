@@ -1,4 +1,4 @@
-import { CoreTransform, type NodeStreamOptions } from '../shared/node.ts'
+import { CoreTransform, type NodeStreamOptions, streamOptions } from '../shared/node.ts'
 import { WatchdogCore, type WatchdogOptions } from './core.ts'
 
 /**
@@ -8,7 +8,7 @@ import { WatchdogCore, type WatchdogOptions } from './core.ts'
  */
 export class Watchdog<T = Uint8Array> extends CoreTransform<T, T> {
   constructor(options: WatchdogOptions & NodeStreamOptions) {
-    const { timeout, firstChunkTimeout, objectMode = false, ...streamOptions } = options
-    super(new WatchdogCore<T>({ timeout, firstChunkTimeout }), { ...streamOptions, objectMode })
+    const { timeout, firstChunkTimeout, objectMode = false } = options
+    super(new WatchdogCore<T>({ timeout, firstChunkTimeout }), { ...streamOptions(options), objectMode })
   }
 }

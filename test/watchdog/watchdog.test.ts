@@ -172,6 +172,20 @@ describe.each(runtimes)('Watchdog (%s)', (runtime) => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
+  it('handles a timeout longer than setTimeout can take', async () => {
+    const day = 24 * 60 * 60 * 1000
+    const stream = drive(runtime, new Watchdog({ timeout: 30 * day }))
+    stream.read()
+    stream.write(bytes(1))
+    // An unclamped timer would wrap around and fire after 1 ms.
+    await advance(1000)
+    expect(stream.state.error).toBeUndefined()
+    await advance(30 * day - 1001)
+    expect(stream.state.error).toBeUndefined()
+    await advance(1)
+    expect(stream.state.error).toMatchObject({ code: 'ERR_SYKE_TIMEOUT', timeout: 30 * day })
+  })
+
   it('rejects invalid options', () => {
     // @ts-expect-error timeout is required
     expect(() => new Watchdog({})).toThrow(RangeError)
@@ -183,6 +197,35 @@ describe.each(runtimes)('Watchdog (%s)', (runtime) => {
 })
 
 describe('Watchdog (node)', () => {
+  it('still trips with highWaterMark: 0', async () => {
+    const stream = drive('node', new NodeWatchdog({ timeout: 100, highWaterMark: 0 }))
+    stream.read()
+    stream.write(bytes(10))
+    await advance(99)
+    expect(stream.state.error).toBeUndefined()
+    await advance(1)
+    expect(stream.state.error).toMatchObject({ code: 'ERR_SYKE_TIMEOUT', firstChunk: false })
+  })
+
+  it('trips waiting for the first chunk with highWaterMark: 0', async () => {
+    const stream = drive('node', new NodeWatchdog({ timeout: 100, highWaterMark: 0 }))
+    stream.read()
+    await advance(100)
+    expect(stream.state.error).toMatchObject({ code: 'ERR_SYKE_TIMEOUT', firstChunk: true })
+  })
+
+  it('tells backpressure from a stall with highWaterMark: 0', async () => {
+    const stream = drive('node', new NodeWatchdog({ timeout: 100, highWaterMark: 0 }))
+    for (let i = 0; i < 5; i++) stream.write(bytes(10))
+    await advance(10_000)
+    expect(stream.state.error).toBeUndefined()
+    stream.read()
+    await advance(0)
+    expect(stream.output.length).toBe(5)
+    await advance(125)
+    expect(stream.state.error).toMatchObject({ code: 'ERR_SYKE_TIMEOUT', firstChunk: false })
+  })
+
   it('passes records through in object mode', async () => {
     const stream = drive('node', new NodeWatchdog<{ n: number }>({ timeout: 100, objectMode: true }))
     stream.read()

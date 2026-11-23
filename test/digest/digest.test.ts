@@ -83,9 +83,82 @@ describe.each(runtimes)('Digest (%s)', (runtime) => {
     // @ts-expect-error neither given
     expect(() => new Digest({})).toThrow(TypeError)
   })
+
+  it('takes an algorithm or a hasher, not both', () => {
+    // @ts-expect-error both given
+    expect(() => new Digest({ algorithm: 'crc32', hasher: nobleLike() })).toThrow(
+      /^syke: Digest takes an algorithm or a hasher, not both$/,
+    )
+  })
+
+  it('rejects an expected digest that is neither a string nor bytes', () => {
+    // @ts-expect-error not a string or Uint8Array
+    expect(() => new Digest({ algorithm: 'crc32', expected: 1234 })).toThrow(/^syke: expected must be a string or a Uint8Array/)
+    // @ts-expect-error not a string or Uint8Array
+    expect(() => new Digest({ algorithm: 'crc32', expected: new ArrayBuffer(4) })).toThrow(TypeError)
+  })
+
+  it('rejects a hasher without update() and digest()', () => {
+    // @ts-expect-error not a hasher
+    expect(() => new Digest({ hasher: { update() {} } })).toThrow(/^syke: hasher must have update\(\) and digest\(\)/)
+  })
+
+  it("fails with a promised hasher's own error, and rejects digest with it", async () => {
+    const failure = new Error('wasm failed to load')
+    const digest = new Digest({ hasher: Promise.reject(failure) })
+    await expect(run(digest, [data])).rejects.toBe(failure)
+    await expect(digest.digest).rejects.toBe(failure)
+  })
+
+  it("rejects digest with a promised hasher's error on an empty stream", async () => {
+    const failure = new Error('wasm failed to load')
+    const digest = new Digest({ hasher: Promise.reject(failure) })
+    await expect(run(digest, [])).rejects.toBe(failure)
+    await expect(digest.digest).rejects.toBe(failure)
+  })
+
+  it('leaves no unhandled rejection when a promised hasher fails and the stream never runs', async () => {
+    const digest = new Digest({ hasher: Promise.reject(new Error('wasm failed to load')) })
+    if (runtime === 'node') (digest as unknown as NodeDigest).destroy()
+    else await (digest as unknown as TransformStream).readable.cancel()
+    await new Promise((resolve) => setImmediate(resolve))
+    await expect(digest.digest).rejects.toThrow(/closed before its digest/)
+  })
+
+  it("rejects digest with the hasher's own error when digest() throws", async () => {
+    const failure = new Error('digest broke')
+    const digest = new Digest({ hasher: { update: () => {}, digest: () => { throw failure } } })
+    await expect(run(digest, [data])).rejects.toBe(failure)
+    await expect(digest.digest).rejects.toBe(failure)
+  })
+
+  it("rejects digest with the hasher's own error when update() throws", async () => {
+    const failure = new Error('update broke')
+    const digest = new Digest({ hasher: { update: () => { throw failure }, digest: () => '00' } })
+    await expect(run(digest, [data])).rejects.toBe(failure)
+    await expect(digest.digest).rejects.toBe(failure)
+  })
+
+  it('rejects digest when a hex digest() returns something that is not hex', async () => {
+    const digest = new Digest({ hasher: { update: () => {}, digest: () => 'xyz' } })
+    await expect(run(digest, [data])).rejects.toThrow(/^syke: not a hex string/)
+    await expect(digest.digest).rejects.toThrow(/^syke: not a hex string/)
+  })
 })
 
 describe('Digest (node)', () => {
+  it('hashes strings as their UTF-8 bytes', async () => {
+    const digest = new NodeDigest({ algorithm: 'sha256' })
+    await run(digest, ['héllo'])
+    expect(await digest.digest).toBe(createHash('sha256').update('héllo', 'utf8').digest('hex'))
+  })
+
+  it('forwards only highWaterMark and signal to the Node stream', () => {
+    const digest = new NodeDigest({ algorithm: 'crc32', highWaterMark: 9, objectMode: true } as never)
+    expect(digest.writableObjectMode).toBe(false)
+    expect(digest.writableHighWaterMark).toBe(9)
+  })
+
   it('supports any crypto.createHash algorithm', async () => {
     const digest = new NodeDigest({ algorithm: 'md5' })
     await run(digest, [data])
@@ -94,6 +167,12 @@ describe('Digest (node)', () => {
 })
 
 describe('Digest (web)', () => {
+  it('fails with a TypeError on a non-byte chunk rather than hashing it', async () => {
+    const digest = new WebDigest({ algorithm: 'crc32' })
+    await expect(run(digest, ['abc'])).rejects.toThrow(/^syke: Digest takes Uint8Array chunks, got string$/)
+    await expect(digest.digest).rejects.toThrow(TypeError)
+  })
+
   it('rejects algorithms it would need WebCrypto streaming for', () => {
     // @ts-expect-error only 'crc32' is built in
     expect(() => new WebDigest({ algorithm: 'sha256' })).toThrow(/pass a hasher/)

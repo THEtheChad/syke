@@ -1,12 +1,12 @@
 export function positiveInt(name: string, value: number): number {
-  if (!Number.isInteger(value) || value <= 0) {
+  if (!Number.isSafeInteger(value) || value <= 0) {
     throw new RangeError(`syke: ${name} must be a positive integer, got ${value}`)
   }
   return value
 }
 
 export function nonNegativeInt(name: string, value: number): number {
-  if (!Number.isInteger(value) || value < 0) {
+  if (!Number.isSafeInteger(value) || value < 0) {
     throw new RangeError(`syke: ${name} must be a non-negative integer, got ${value}`)
   }
   return value

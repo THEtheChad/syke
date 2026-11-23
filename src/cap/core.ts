@@ -1,3 +1,4 @@
+import { assertBytes } from '../shared/bytes.ts'
 import { SykeError } from '../shared/errors.ts'
 import type { Sink, Transformer } from '../shared/transformer.ts'
 import { nonNegativeInt, oneOf } from '../shared/validate.ts'
@@ -69,7 +70,8 @@ export class CapCore<T> implements Transformer<T, T> {
       sink.push(chunk)
       return
     }
-    const bytes = chunk as Uint8Array
+    assertBytes('Cap with maxBytes', chunk)
+    const bytes: Uint8Array = chunk
     const room = this.#limit - this.bytes
     if (bytes.byteLength <= room) {
       this.bytes += bytes.byteLength

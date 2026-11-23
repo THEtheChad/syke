@@ -1,4 +1,4 @@
-import { CoreTransform, type NodeStreamOptions } from '../shared/node.ts'
+import { CoreTransform, type NodeStreamOptions, streamOptions } from '../shared/node.ts'
 import { LengthCheckCore, type LengthCheckOptions } from './core.ts'
 
 /**
@@ -11,9 +11,9 @@ export class LengthCheck extends CoreTransform<Uint8Array, Uint8Array> {
   readonly #core: LengthCheckCore
 
   constructor(options: LengthCheckOptions & NodeStreamOptions) {
-    const { expected, min, max, ...streamOptions } = options
+    const { expected, min, max } = options
     const core = new LengthCheckCore({ expected, min, max })
-    super(core, streamOptions)
+    super(core, streamOptions(options))
     this.#core = core
   }
 

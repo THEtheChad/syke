@@ -1,3 +1,4 @@
+import { assertBytes } from '../shared/bytes.ts'
 import { SykeError } from '../shared/errors.ts'
 import type { Sink, Transformer } from '../shared/transformer.ts'
 import { nonNegativeInt } from '../shared/validate.ts'
@@ -46,6 +47,7 @@ export class LengthCheckCore implements Transformer<Uint8Array, Uint8Array> {
   }
 
   transform(chunk: Uint8Array, sink: Sink<Uint8Array>): void {
+    assertBytes('LengthCheck', chunk)
     this.bytes += chunk.byteLength
     // Fail before passing on the chunk that overruns, so it never reaches the consumer.
     if (this.bytes > this.#max) {

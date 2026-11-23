@@ -1,4 +1,4 @@
-import { CoreTransform, type NodeStreamOptions } from '../shared/node.ts'
+import { CoreTransform, type NodeStreamOptions, streamOptions } from '../shared/node.ts'
 import { ParallelMapCore, type ParallelMapFn, type ParallelMapOptions } from './core.ts'
 
 /**
@@ -10,7 +10,7 @@ import { ParallelMapCore, type ParallelMapFn, type ParallelMapOptions } from './
  */
 export class ParallelMap<I = unknown, O = unknown> extends CoreTransform<I, O> {
   constructor(fn: ParallelMapFn<I, O>, options: ParallelMapOptions & NodeStreamOptions) {
-    const { concurrency, ordered, ...streamOptions } = options ?? ({} as ParallelMapOptions)
-    super(new ParallelMapCore<I, O>(fn, { concurrency, ordered }), { ...streamOptions, objectMode: true })
+    const { concurrency, ordered } = options ?? ({} as ParallelMapOptions)
+    super(new ParallelMapCore<I, O>(fn, { concurrency, ordered }), { ...streamOptions(options), objectMode: true })
   }
 }

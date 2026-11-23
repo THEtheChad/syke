@@ -38,6 +38,9 @@ export class Digest extends CoreTransformStream<Uint8Array, Uint8Array> {
 
   constructor(options: DigestOptions) {
     const { algorithm, hasher, expected, encoding } = options
+    if (algorithm !== undefined && hasher !== undefined) {
+      throw new TypeError('syke: Digest takes an algorithm or a hasher, not both')
+    }
     if (hasher === undefined && algorithm?.toLowerCase() !== 'crc32') {
       throw new TypeError(
         `syke: Digest in syke/web supports algorithm 'crc32'; pass a hasher for anything else, got ${String(algorithm)}`,

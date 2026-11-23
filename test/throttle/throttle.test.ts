@@ -129,6 +129,16 @@ describe.each(runtimes)('Throttle (%s)', (runtime) => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
+  it('waits out a delay longer than setTimeout can take', async () => {
+    // 3000 bytes at 1 byte per 1000 s: a 3e9 ms wait, past setTimeout's 2^31 - 1 ms.
+    const throttle = new Throttle({ bytesPerSecond: 0.001, burst: 3000 })
+    const output = await timedRun(runtime, throttle, [bytes(3000), bytes(3000)])
+    expect(totals(output)).toEqual([
+      [0, 3000],
+      [3_000_000_000, 6000],
+    ])
+  })
+
   it('rejects invalid options', () => {
     // @ts-expect-error neither given
     expect(() => new Throttle({})).toThrow(TypeError)
@@ -156,6 +166,20 @@ describe('Throttle (node)', () => {
 })
 
 describe('Throttle (web)', () => {
+  it('fails a byte throttle with a TypeError on a non-byte chunk rather than letting it through free', async () => {
+    await expect(timedRun('web', new WebThrottle({ bytesPerSecond: 100 }), [bytes(1), 'abc'])).rejects.toThrow(
+      /^syke: Throttle with bytesPerSecond takes Uint8Array chunks, got string$/,
+    )
+  })
+
+  it('takes chunks of any type with itemsPerSecond', async () => {
+    const output = await timedRun('web', new WebThrottle<unknown>({ itemsPerSecond: 1, burst: 1 }), ['a', { b: 1 }])
+    expect(output).toEqual([
+      { at: 0, chunk: 'a' },
+      { at: 1000, chunk: { b: 1 } },
+    ])
+  })
+
   it('clears a pending delay and cancels the source when the consumer cancels', async () => {
     let cancelled = false
     const source = new NodeReadableStream<Uint8Array>({

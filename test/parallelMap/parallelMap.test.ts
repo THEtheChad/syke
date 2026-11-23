@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { ParallelMap as NodeParallelMap } from '../../src/node.ts'
 import { ParallelMap as WebParallelMap } from '../../src/web.ts'
+import { ParallelMapCore } from '../../src/parallelMap/core.ts'
 import { pick, run, runSettled, runtimes } from '../harness.ts'
 import { drive } from '../streamDriver.ts'
 
@@ -256,6 +257,74 @@ describe.each(runtimes)('ParallelMap (%s)', (runtime) => {
     expect(stats.inFlight).toBe(0)
   })
 
+  describe.each([
+    ['undefined', undefined],
+    ['null', null],
+    ["''", ''],
+    ['0', 0],
+    ['false', false],
+    ['NaN', Number.NaN],
+  ])('when fn fails with %s', (shown, thrown) => {
+    const expectFailure = (error: unknown) => {
+      // Node reads a falsy error as success, so it's wrapped, keeping the original as `cause`.
+      expect(error).toBeInstanceOf(Error)
+      expect((error as Error).message).toBe(`syke: stream failed with ${shown}`)
+      expect((error as Error).cause).toBe(thrown)
+    }
+
+    it.each([1, 3])('fails the stream when it throws synchronously (concurrency %i)', async (concurrency) => {
+      const fn = (i: number) => {
+        if (i === 2) throw thrown
+        return i
+      }
+      const { error } = await runSettled(new ParallelMap(fn, { concurrency }), range(10))
+      expectFailure(error)
+    })
+
+    it.each([1, 3])('fails the stream when it rejects (concurrency %i)', async (concurrency) => {
+      const fn = async (i: number) => {
+        await turns(1)
+        if (i === 2) throw thrown
+        return i
+      }
+      const { error } = await runSettled(new ParallelMap(fn, { concurrency }), range(10))
+      expectFailure(error)
+    })
+
+    it('fails the stream when it rejects while idle', async () => {
+      const fn = async () => {
+        await turns(2)
+        throw thrown
+      }
+      const stream = drive(runtime, new ParallelMap(fn, { concurrency: 2 }))
+      await stream.write(1)
+      expectFailure(await stream.done)
+    })
+  })
+
+  it('keeps order with a high concurrency and results finishing in reverse', async () => {
+    const total = 5000
+    const gates = range(total).map(() => deferred<number>())
+    const map = new ParallelMap((i: number) => gates[i]?.promise, { concurrency: total })
+    const stream = drive<number>(runtime, map)
+    for (const i of range(total)) stream.write(i).catch(() => {})
+    await turns(2)
+    for (let i = total - 1; i >= 0; i--) gates[i]?.resolve(i)
+    await turns(2)
+    await stream.end()
+    expect(await stream.done).toBeUndefined()
+    expect(stream.output).toEqual(range(total))
+  })
+
+  it('keeps order as the queue drains and refills', async () => {
+    // Enough items to compact the queue's dead prefix many times over.
+    const fn = async (i: number) => {
+      await turns(latency(i))
+      return i
+    }
+    expect(await run(new ParallelMap(fn, { concurrency: 2000 }), range(20_000))).toEqual(range(20_000))
+  })
+
   it('rejects invalid options', () => {
     const fn = (i: unknown) => i
     // @ts-expect-error concurrency is required
@@ -266,7 +335,36 @@ describe.each(runtimes)('ParallelMap (%s)', (runtime) => {
     expect(() => new ParallelMap(undefined, { concurrency: 1 })).toThrow(TypeError)
     expect(() => new ParallelMap(fn, { concurrency: 0 })).toThrow(RangeError)
     expect(() => new ParallelMap(fn, { concurrency: 1.5 })).toThrow(RangeError)
+    expect(() => new ParallelMap(fn, { concurrency: 2 ** 53 })).toThrow(RangeError)
     // @ts-expect-error not a boolean
     expect(() => new ParallelMap(fn, { concurrency: 1, ordered: 'no' })).toThrow(TypeError)
+  })
+})
+
+describe('ParallelMap (node)', () => {
+  it('forwards only highWaterMark and signal to the Node stream', () => {
+    const map = new NodeParallelMap((i: unknown) => i, { concurrency: 1, highWaterMark: 3, autoDestroy: false } as never)
+    expect(map.readableHighWaterMark).toBe(3)
+    expect(map.readableObjectMode).toBe(true)
+    expect((map as unknown as { _readableState: { autoDestroy: boolean } })._readableState.autoDestroy).toBe(true)
+  })
+})
+
+describe('ParallelMapCore', () => {
+  it('drops finished results held back in order when closed', async () => {
+    const pushed: number[] = []
+    const sink = { push: (value: number) => pushed.push(value), end() {}, error() {}, full: false }
+    const head = deferred<number>()
+    const core = new ParallelMapCore<number, number>((i) => (i === 0 ? head.promise : i), { concurrency: 4 })
+    core.start(sink)
+    core.transform(0)
+    core.transform(1)
+    core.transform(2)
+    await turns(1)
+    // 1 and 2 are done but wait behind 0; closing must not leave them (or 0) to be emitted.
+    core.close()
+    head.resolve(0)
+    await turns(1)
+    expect(pushed).toEqual([])
   })
 })

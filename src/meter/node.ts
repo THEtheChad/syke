@@ -1,4 +1,4 @@
-import { CoreTransform, type NodeStreamOptions } from '../shared/node.ts'
+import { CoreTransform, type NodeStreamOptions, streamOptions } from '../shared/node.ts'
 import { MeterCore, type MeterOptions, type MeterStats } from './core.ts'
 
 /**
@@ -9,9 +9,9 @@ export class Meter<T = Uint8Array> extends CoreTransform<T, T> {
   readonly #core: MeterCore<T>
 
   constructor(options: MeterOptions & NodeStreamOptions = {}) {
-    const { onProgress, interval, objectMode = false, ...streamOptions } = options
+    const { onProgress, interval, objectMode = false } = options
     const core = new MeterCore<T>({ onProgress, interval })
-    super(core, { ...streamOptions, objectMode })
+    super(core, { ...streamOptions(options), objectMode })
     this.#core = core
   }
 

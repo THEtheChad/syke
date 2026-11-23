@@ -1,4 +1,4 @@
-import { CoreTransform, type NodeStreamOptions } from '../shared/node.ts'
+import { CoreTransform, type NodeStreamOptions, streamOptions } from '../shared/node.ts'
 import { CapCore, type CapOptions } from './core.ts'
 
 /**
@@ -12,9 +12,9 @@ export class Cap<T = Uint8Array> extends CoreTransform<T, T> {
   readonly #core: CapCore<T>
 
   constructor(options: CapOptions & NodeStreamOptions) {
-    const { maxBytes, maxItems, onLimit, ...streamOptions } = options
+    const { maxBytes, maxItems, onLimit } = options
     const core = new CapCore<T>({ maxBytes, maxItems, onLimit } as CapOptions)
-    super(core, { ...streamOptions, objectMode: maxItems !== undefined })
+    super(core, { ...streamOptions(options), objectMode: maxItems !== undefined })
     this.#core = core
   }
 

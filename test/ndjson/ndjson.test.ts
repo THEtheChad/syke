@@ -1,3 +1,4 @@
+import { ReadableStream as NodeReadableStream } from 'node:stream/web'
 import { describe, expect, it } from 'vitest'
 import {
   LineTooLongError,
@@ -153,9 +154,39 @@ describe.each(runtimes)('NdjsonStringify (%s)', (runtime) => {
   })
 })
 
-describe('NdjsonParse (node)', () => {
+describe.each(runtimes)('NdjsonParse (%s) with text input', (runtime) => {
+  const NdjsonParse = pick(runtime, { node: NodeNdjsonParse, web: WebNdjsonParse })
+
   it('accepts strings', async () => {
-    expect(await run(new NodeNdjsonParse(), ['{"a":', '1}\n[', '2]'])).toEqual([{ a: 1 }, [2]])
+    expect(await run(new NdjsonParse(), ['{"a":', '1}\n[', '2]'])).toEqual([{ a: 1 }, [2]])
+  })
+
+  it('strips a byte order mark from a leading string, as it does from leading bytes', async () => {
+    // fs.createReadStream(path, 'utf8') keeps a file's BOM; JSON.parse would choke on it.
+    expect(await run(new NdjsonParse(), ['\uFEFF{"a":1}\n'])).toEqual([{ a: 1 }])
+    expect(await run(new NdjsonParse(), [encode('\uFEFF{"a":1}\n')])).toEqual([{ a: 1 }])
+  })
+
+  it('fails only the line with a byte order mark past the start', async () => {
+    const { output, error } = await runSettled(new NdjsonParse(), ['1\n', encode('\uFEFF2\n')])
+    expect(error).toMatchObject({ code: 'ERR_SYKE_NDJSON', line: 2 })
+    expect([1]).toEqual(expect.arrayContaining(output))
+  })
+})
+
+describe('NdjsonParse (web)', () => {
+  it('types its input to accept a TextDecoderStream (lib.dom)', () => {
+    // Compile-time check: this only type-checks if the input side takes strings.
+    const pipe = (text: ReadableStream<string>) => text.pipeThrough(new WebNdjsonParse())
+    expect(typeof pipe).toBe('function')
+  })
+
+  it("takes a TextDecoderStream's output", async () => {
+    const source = NodeReadableStream.from([encode('{"a":1}\n{"b":'), encode('2}\n')])
+    const parsed: unknown[] = []
+    const text = source.pipeThrough(new TextDecoderStream() as never) as NodeReadableStream<string>
+    for await (const value of text.pipeThrough(new WebNdjsonParse() as never)) parsed.push(value)
+    expect(parsed).toEqual([{ a: 1 }, { b: 2 }])
   })
 })
 

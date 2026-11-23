@@ -83,6 +83,19 @@ describe.each(runtimes)('Cap (%s)', (runtime) => {
 })
 
 describe('Cap (web)', () => {
+  it('fails a byte cap with a TypeError on a non-byte chunk rather than miscounting', async () => {
+    const cap = new WebCap({ maxBytes: 10 })
+    const { output, error } = await runSettled(cap, [new Uint8Array(2), 'abc'])
+    expect(error).toBeInstanceOf(TypeError)
+    expect(error.message).toBe('syke: Cap with maxBytes takes Uint8Array chunks, got string')
+    expect(cap.bytes).toBe(2)
+    expect(output.length).toBeLessThanOrEqual(1)
+  })
+
+  it('counts chunks of any type with maxItems', async () => {
+    expect(await run(new WebCap<unknown>({ maxItems: 3 }), ['a', 1, { b: 2 }])).toEqual(['a', 1, { b: 2 }])
+  })
+
   it('cancels a piped source after truncating', async () => {
     let cancelled = false
     let pulls = 0
@@ -115,6 +128,14 @@ describe('Cap (node)', () => {
       for await (const piece of source) output.push(piece)
     })
     expect(Buffer.concat(output).equals(data.subarray(0, 2500))).toBe(true)
+  })
+
+  it('forwards only highWaterMark and signal to the Node stream', () => {
+    const cap = new NodeCap({ maxBytes: 3, highWaterMark: 11, objectMode: true } as never)
+    expect(cap.writableObjectMode).toBe(false)
+    expect(cap.writableHighWaterMark).toBe(11)
+    const items = new NodeCap({ maxItems: 3, objectMode: false } as never)
+    expect(items.writableObjectMode).toBe(true)
   })
 
   it('accepts strings in byte mode', async () => {

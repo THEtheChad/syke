@@ -1,4 +1,4 @@
-import { CoreTransform, type NodeStreamOptions } from '../shared/node.ts'
+import { CoreTransform, type NodeStreamOptions, streamOptions } from '../shared/node.ts'
 import { LinesCore, type LinesOptions } from './core.ts'
 
 /**
@@ -9,9 +9,9 @@ import { LinesCore, type LinesOptions } from './core.ts'
  */
 export class Lines extends CoreTransform<Uint8Array | string, string> {
   constructor(options: LinesOptions & NodeStreamOptions = {}) {
-    const { encoding, maxLineLength, ...streamOptions } = options
+    const { encoding, maxLineLength } = options
     super(new LinesCore({ encoding, maxLineLength }), {
-      ...streamOptions,
+      ...streamOptions(options),
       readableObjectMode: true,
       // Strings are already text; don't let Node re-encode them as UTF-8 bytes.
       decodeStrings: false,

@@ -7,11 +7,11 @@ import {
 } from './core.ts'
 
 /**
- * Parses newline-delimited JSON: takes UTF-8 bytes and emits one value per
+ * Parses newline-delimited JSON: takes UTF-8 bytes (or strings) and emits one value per
  * line, skipping blank lines. Invalid JSON, or a top-level `null`, fails the
  * stream with an `NdjsonParseError`.
  */
-export class NdjsonParse<T = unknown> extends CoreTransformStream<Uint8Array, T> {
+export class NdjsonParse<T = unknown> extends CoreTransformStream<Uint8Array | string, T> {
   constructor(options: NdjsonParseOptions = {}) {
     super(new NdjsonParseCore<T>(options))
   }

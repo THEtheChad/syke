@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { Rechunk as NodeRechunk } from '../../src/node.ts'
 import { Rechunk as WebRechunk } from '../../src/web.ts'
-import { chunk, pick, run, runtimes } from '../harness.ts'
+import { chunk, pick, run, runSettled, runtimes } from '../harness.ts'
 
 describe.each(runtimes)('Rechunk (%s)', (runtime) => {
   const Rechunk = pick(runtime, { node: NodeRechunk, web: WebRechunk })
@@ -74,7 +74,26 @@ describe.each(runtimes)('Rechunk (%s)', (runtime) => {
   })
 })
 
+describe('Rechunk (web)', () => {
+  it('fails with a TypeError on a non-byte chunk rather than emitting garbage', async () => {
+    const { error } = await runSettled(new WebRechunk({ size: 4 }), [new Uint8Array(3), 'abcdef'])
+    expect(error).toBeInstanceOf(TypeError)
+    expect(error.message).toBe('syke: Rechunk takes Uint8Array chunks, got string')
+  })
+
+  it('rejects a Uint16Array, whose subarray() counts elements, not bytes', async () => {
+    const { error } = await runSettled(new WebRechunk({ size: 4 }), [new Uint16Array(4)])
+    expect(error?.message).toBe('syke: Rechunk takes Uint8Array chunks, got Uint16Array')
+  })
+})
+
 describe('Rechunk (node)', () => {
+  it('accepts strings, as UTF-8 bytes', async () => {
+    const output = await run<Uint8Array>(new NodeRechunk({ size: 2 }), ['héllo'])
+    expect(Buffer.concat(output).toString()).toBe('héllo')
+    expect(output.map((piece) => piece.byteLength)).toEqual([2, 2, 2])
+  })
+
   it('emits Buffers, keeps chunk sizes under for-await, and sizes its readable buffer in bytes', async () => {
     const data = randomBytes(10_000)
     const rechunk = new NodeRechunk({ size: 1000, highWaterMark: 4000 })

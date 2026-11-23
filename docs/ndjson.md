@@ -36,8 +36,8 @@ for await (const event of res.body.pipeThrough(new NdjsonParse())) render(event)
 Built on [`Lines`](lines.md): lines split on `\n` with a trailing `\r`
 stripped, a final line without a newline is parsed, and a multi-byte character
 split across chunks decodes correctly. Blank lines (empty, or only spaces,
-tabs and `\r`) are skipped. In `syke/node` it also accepts strings, and the
-output side is in object mode.
+tabs and `\r`) are skipped. Both `syke/node` and `syke/web` also accept string
+chunks, and in `syke/node` the output side is in object mode.
 
 | Option | Default | Description |
 | ------ | ------- | ----------- |

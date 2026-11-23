@@ -1,4 +1,4 @@
-import type { Sink, Transformer } from '../shared/transformer.ts'
+import { MAX_TIMEOUT_MS, type Sink, type Transformer } from '../shared/transformer.ts'
 import { positiveInt, positiveNumber } from '../shared/validate.ts'
 
 export interface BatchOptions {
@@ -32,9 +32,7 @@ export class BatchCore<T> implements Transformer<T, T[]> {
   transform(record: T): void {
     this.#batch.push(record)
     if (this.#batch.length >= this.#size) this.#emit()
-    else if (this.#batch.length === 1 && this.#maxWait !== undefined) {
-      this.#timer = setTimeout(() => this.#emit(), this.#maxWait)
-    }
+    else if (this.#batch.length === 1 && this.#maxWait !== undefined) this.#wait(this.#maxWait)
   }
 
   flush(): void {
@@ -43,6 +41,18 @@ export class BatchCore<T> implements Transformer<T, T[]> {
 
   close(): void {
     this.#clearTimer()
+    // Don't hold on to records nobody will receive.
+    this.#batch = []
+  }
+
+  /** Emits the batch after `ms`, in steps if it's longer than setTimeout can take. */
+  #wait(ms: number) {
+    const step = Math.min(ms, MAX_TIMEOUT_MS)
+    this.#timer = setTimeout(() => {
+      this.#timer = undefined
+      if (ms > step) this.#wait(ms - step)
+      else this.#emit()
+    }, step)
   }
 
   #emit() {
