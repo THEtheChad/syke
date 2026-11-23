@@ -12,13 +12,21 @@ let exitHookInstalled = false
 
 /** Removes the file of a spool that was garbage-collected without being destroyed. */
 const abandoned = new FinalizationRegistry<string>((filepath) => {
-  const file = openFiles.get(filepath)
-  openFiles.delete(filepath)
-  void Promise.resolve(file?.close())
+  // Stays in `openFiles` until it's gone, so the exit hook still removes it
+  // if the process exits mid-way.
+  void removeFile(filepath, openFiles.get(filepath))
     .catch(() => {})
-    .then(() => rm(filepath, { force: true }))
-    .catch(() => {})
+    .finally(() => openFiles.delete(filepath))
 })
+
+/** Closes `file` (if any) and deletes `filepath`, even if closing fails. */
+export async function removeFile(filepath: string, file: FileHandle | undefined): Promise<void> {
+  try {
+    await file?.close()
+  } finally {
+    await rm(filepath, { force: true })
+  }
+}
 
 /**
  * Tracks `filepath` until `releaseFile()` so it's deleted even if its stream
@@ -35,10 +43,18 @@ export function trackFile(owner: object, filepath: string, file: FileHandle): vo
   abandoned.register(owner, filepath, owner)
 }
 
+/**
+ * The stream is removing the file itself: garbage collection no longer
+ * needs to. The exit hook still covers it until `releaseFile()`.
+ */
+export function disownFile(owner: object): void {
+  abandoned.unregister(owner)
+}
+
 /** Stops tracking once the stream has closed and deleted the file itself. */
 export function releaseFile(owner: object, filepath: string): void {
-  openFiles.delete(filepath)
   abandoned.unregister(owner)
+  openFiles.delete(filepath)
 }
 
 function removeAllSync() {

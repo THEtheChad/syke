@@ -23,7 +23,7 @@ export function parseMinFreeSpace(value: MinFreeSpace): FreeSpaceFloor {
   if (value === false) return null
 
   if (typeof value === 'number') {
-    if (!Number.isInteger(value) || value < 0) {
+    if (!Number.isSafeInteger(value) || value < 0) {
       throw new RangeError(
         `syke: minFreeSpace must be a non-negative integer of bytes, a percentage like '10%', or false, got ${value}`,
       )
@@ -31,6 +31,11 @@ export function parseMinFreeSpace(value: MinFreeSpace): FreeSpaceFloor {
     return { bytes: value }
   }
 
+  if (typeof value !== 'string') {
+    throw new TypeError(
+      `syke: minFreeSpace must be a non-negative integer of bytes, a percentage like '10%', or false, got ${String(value)}`,
+    )
+  }
   const match = /^(\d+(?:\.\d+)?)%$/.exec(value)
   const percent = match ? Number(match[1]) : Number.NaN
   if (!(percent >= 0 && percent <= 100)) {
