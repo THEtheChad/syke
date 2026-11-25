@@ -1,6 +1,6 @@
 import { forceCloseDatabase } from 'fake-indexeddb'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { installFakeBrowser, useFakeBrowser } from './fakeBrowser.ts'
+import { installFakeBrowser, useFakeBrowser, waitFor } from './fakeBrowser.ts'
 
 const MiB = 1024 * 1024
 
@@ -148,5 +148,50 @@ describe('the spool database connection', () => {
     ;(req.onsuccess as () => void)()
     expect(db.close).toHaveBeenCalledOnce()
     vi.unstubAllGlobals()
+  })
+})
+
+describe('OPFS truncation and the quota budget', () => {
+  const floor = { bytes: 0 } as const
+  const macrotask = () => new Promise((resolve) => setTimeout(resolve))
+
+  /** A fresh page's quota module and an OPFS store holding 1 MiB, counted as growth. */
+  async function storeWithOneMiB() {
+    const browser = installFakeBrowser({ quota: 10 * MiB })
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(0)
+    vi.resetModules()
+    const quota = await import('../../../src/spool/web/quota.ts')
+    const { OpfsStore } = await import('../../../src/spool/web/opfs.ts')
+    expect(await quota.storageBudget(floor)).toBe(10 * MiB)
+    const store = await OpfsStore.open('accounting', 64 * 1024, Number.POSITIVE_INFINITY, () => {})
+    expect(store.room(MiB, MiB, false)).toBe(MiB)
+    quota.storageGrew(await store.write(new Uint8Array(MiB)))
+    expect(await quota.storageBudget(floor)).toBe(9 * MiB)
+    return { browser, quota, store }
+  }
+
+  it('gives the space back only once the truncate is done', async () => {
+    const { browser, quota, store } = await storeWithOneMiB()
+    browser.holdReplies.add('truncate')
+    while (!store.empty) await store.read()
+    // The worker has truncated, but the page hasn't heard yet.
+    await waitFor(() => browser.heldReplies === 1)
+    expect(await quota.storageBudget(floor)).toBe(9 * MiB)
+    browser.releaseReplies()
+    await macrotask()
+    expect(await quota.storageBudget(floor)).toBe(10 * MiB)
+    await store.close()
+  })
+
+  it('does not give the space back when the truncate fails', async () => {
+    const { browser, quota, store } = await storeWithOneMiB()
+    browser.truncateError = 'InvalidStateError'
+    while (!store.empty) await store.read()
+    await waitFor(() => browser.truncates === 1)
+    await macrotask()
+    await macrotask()
+    expect(await quota.storageBudget(floor)).toBe(9 * MiB)
+    await store.close()
   })
 })

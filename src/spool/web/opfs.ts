@@ -261,14 +261,19 @@ export class OpfsStore implements SpoolStore {
    * Everything is read: give the file's space back to the origin. Only when
    * no write is placed or in flight, so none can land past the new end; the
    * worker runs requests in order, so later writes follow the truncate.
+   * Writes are placed from the start of the file at once, but the space is
+   * only given back to the quota budget once the truncate has happened.
    */
   #shrinkIfEmpty() {
     const size = this.#extents.fileSize
     if (!this.#extents.empty || this.#writing || this.#placed || size === 0) return
-    this.#extents.fileSize = 0
-    storageFreed(size)
-    // On failure the file just stays larger: everything in it is read.
-    this.#channel.call({ op: 'truncate', name: this.#name, size: 0 }).catch(() => {})
+    this.#extents.reset()
+    // On failure the file just stays larger: everything in it is read, and
+    // rewriting that space counts as growth again, which errs on the safe side.
+    this.#channel.call({ op: 'truncate', name: this.#name, size: 0 }).then(
+      () => storageFreed(size),
+      () => {},
+    )
   }
 
   close(): Promise<void> {
