@@ -259,6 +259,8 @@ describe('ForkCore', () => {
   /** A source that never produces anything. */
   const idle = (): Puller<unknown> => ({ next: () => new Promise(() => {}), cancel: () => {}, release: () => {} })
 
+  // Not reachable through fork(), which starts every branch at once; this
+  // checks the core keeps its side of the Producer contract anyway.
   it('errors a branch that starts after the source failed', () => {
     const error = new Error('early')
     const core = new ForkCore((onError) => {

@@ -19,7 +19,12 @@ export class ForkCore<T> {
   readonly #branches: Branch<T>[]
   #reading = false
   #finished = false
-  /** A failure that came before some branch's output stream was made. */
+  /**
+   * A failure that came before some branch's output stream was made.
+   * Deliberate defence: `fork()` starts every branch synchronously and
+   * `onError` always fires later, so the public API can't get here, but the
+   * `Producer` contract doesn't promise `start()` comes first.
+   */
   #error: { reason: unknown } | null = null
 
   constructor(open: (onError: OnError) => Puller<T>, count: number) {
