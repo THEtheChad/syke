@@ -1,4 +1,4 @@
-import { assertBytes, equalBytes, fromHex, isUint8Array, toBase64, toHex } from '../shared/bytes.ts'
+import { assertUint8Array, equalBytes, fromHex, isUint8Array, toBase64, toHex } from '../shared/bytes.ts'
 import { SykeError } from '../shared/errors.ts'
 import type { Sink, Transformer } from '../shared/transformer.ts'
 import { oneOf } from '../shared/validate.ts'
@@ -71,7 +71,7 @@ export class DigestCore implements Transformer<Uint8Array, Uint8Array> {
 
   transform(chunk: Uint8Array, sink: Sink<Uint8Array>): void | Promise<void> {
     try {
-      assertBytes('Digest', chunk)
+      assertUint8Array('Digest', chunk)
     } catch (error) {
       this.#fail(error)
     }

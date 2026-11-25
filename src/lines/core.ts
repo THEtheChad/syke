@@ -1,3 +1,4 @@
+import { describeChunk, isByteSource } from '../shared/bytes.ts'
 import { SykeError } from '../shared/errors.ts'
 import type { Sink, Transformer } from '../shared/transformer.ts'
 
@@ -65,8 +66,8 @@ export class LineSplitter {
     let text: string
     // A string arriving mid-character ends that character (as U+FFFD) first.
     if (typeof chunk === 'string') text = this.#decoder.decode() + chunk
-    else if (isBufferSource(chunk)) text = this.#decoder.decode(chunk, { stream: true })
-    else throw new TypeError(`syke: expected Uint8Array or string chunks, got ${chunk === null ? 'null' : typeof chunk}`)
+    else if (isByteSource(chunk)) text = this.#decoder.decode(chunk, { stream: true })
+    else throw new TypeError(`syke: expected Uint8Array or string chunks, got ${describeChunk(chunk)}`)
     this.#split(this.#text(text), onLine)
   }
 
@@ -122,10 +123,6 @@ export class LineSplitter {
   #check(length: number) {
     if (length > this.#maxLineLength) throw new LineTooLongError(this.#line + 1, this.#maxLineLength)
   }
-}
-
-function isBufferSource(chunk: unknown): chunk is AllowSharedBufferSource {
-  return ArrayBuffer.isView(chunk) || Object.prototype.toString.call(chunk) === '[object ArrayBuffer]'
 }
 
 function stripCR(line: string): string {

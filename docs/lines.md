@@ -33,7 +33,10 @@ for await (const line of res.body.pipeThrough(new Lines())) render(line)
 - **Decoding:** a streaming `TextDecoder`, so a multi-byte character split
   across chunks decodes correctly. A leading UTF-8 (or UTF-16) byte order mark
   is dropped for both byte and string input. Invalid bytes become `U+FFFD`, as
-  `TextDecoder` does.
+  `TextDecoder` does. In `syke/web` bytes can come as a `Uint8Array`, any
+  other view (`DataView`, ...), an `ArrayBuffer` or a `SharedArrayBuffer`; in
+  `syke/node` the byte-mode stream turns views into `Buffer`s first. A chunk
+  that's neither bytes nor a string fails the stream with a `TypeError`.
 - **Strings:** a string chunk is taken as text that's already decoded (in both
   `syke/node` and `syke/web`, e.g. after `TextDecoderStream`). In `syke/node`
   the output side is in object mode, one string per chunk.

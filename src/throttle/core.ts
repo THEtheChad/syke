@@ -1,4 +1,4 @@
-import { assertBytes } from '../shared/bytes.ts'
+import { byteLengthOf } from '../shared/bytes.ts'
 import { MAX_TIMEOUT_MS, type Sink, type Transformer } from '../shared/transformer.ts'
 import { positiveNumber } from '../shared/validate.ts'
 
@@ -52,11 +52,7 @@ export class ThrottleCore<T> implements Transformer<T, T> {
   }
 
   transform(chunk: T, sink: Sink<T>): void | Promise<void> {
-    let cost = 1
-    if (!this.#items) {
-      assertBytes('Throttle with bytesPerSecond', chunk)
-      cost = chunk.byteLength
-    }
+    const cost = this.#items ? 1 : byteLengthOf('Throttle with bytesPerSecond', chunk)
     const need = Math.min(cost, this.#burst)
     this.#refill()
     if (this.#tokens >= need) {

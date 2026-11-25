@@ -61,6 +61,18 @@ describe.each(runtimes)('LengthCheck (%s)', (runtime) => {
     expect(error).toMatchObject({ code: 'ERR_SYKE_LENGTH', bytes: data.length })
   })
 
+  // A byte-mode Node stream turns any view into a Buffer before LengthCheck sees it; the web one gets it as is.
+  it.each([
+    ['a DataView', new DataView(new ArrayBuffer(6), 1, 4), 4],
+    ['a Uint16Array', new Uint16Array(3), 6],
+    ['a Float64Array', new Float64Array(2), 16],
+  ])('counts the bytes of %s, not its elements', async (_, view, size) => {
+    const check = new LengthCheck({ expected: size + 2 })
+    const output = await run<ArrayBufferView>(check, [new Uint8Array(2), view])
+    expect(output.reduce((n, piece) => n + piece.byteLength, 0)).toBe(size + 2)
+    expect(check.bytes).toBe(size + 2)
+  })
+
   it('accepts a Uint8Array from another realm', async () => {
     const foreign = runInNewContext('new Uint8Array([1, 2, 3])') as Uint8Array
     expect(foreign instanceof Uint8Array).toBe(false)
@@ -70,24 +82,44 @@ describe.each(runtimes)('LengthCheck (%s)', (runtime) => {
 })
 
 describe('LengthCheck (web)', () => {
+  it('counts ArrayBuffer and DataView chunks, passing them through untouched', async () => {
+    const input = [new ArrayBuffer(4), new DataView(new ArrayBuffer(4)), new Uint16Array(2), new SharedArrayBuffer(3)]
+    const check = new WebLengthCheck({ expected: 15 })
+    const output = await run(check, input)
+    expect(output).toHaveLength(input.length)
+    output.forEach((chunk, i) => expect(chunk).toBe(input[i]))
+    expect(check.bytes).toBe(15)
+  })
+
+  it('counts an ArrayBuffer from another realm', async () => {
+    const foreign = runInNewContext('new ArrayBuffer(5)') as ArrayBuffer
+    expect(foreign instanceof ArrayBuffer).toBe(false)
+    const check = new WebLengthCheck({ expected: 5 })
+    await run(check, [foreign])
+    expect(check.bytes).toBe(5)
+  })
+
   it.each([
     ['a string', 'abc', /got string$/],
     ['a number', 42, /got number$/],
-    ['an ArrayBuffer', new ArrayBuffer(4), /got ArrayBuffer$/],
-    ['a DataView', new DataView(new ArrayBuffer(4)), /got DataView$/],
-    ['a Uint16Array', new Uint16Array(2), /got Uint16Array$/],
     ['a plain object', { byteLength: 3 }, /got Object$/],
+    ['an object posing as an ArrayBuffer', { byteLength: 3, [Symbol.toStringTag]: 'ArrayBuffer' }, /got Object$/],
   ])('fails with a TypeError on %s rather than miscounting', async (_, bad, message) => {
     const check = new WebLengthCheck({ max: 100 })
     const { error } = await runSettled(check, [new Uint8Array(2), bad])
     expect(error).toBeInstanceOf(TypeError)
-    expect(error.message).toMatch(/^syke: LengthCheck takes Uint8Array chunks, got /)
+    expect(error.message).toMatch(/^syke: LengthCheck takes byte chunks \(an ArrayBuffer or a view of one\), got /)
     expect(error.message).toMatch(message)
     expect(check.bytes).toBe(2)
   })
 })
 
 describe('LengthCheck (node)', () => {
+  it('leaves a bare ArrayBuffer to Node, whose byte-mode streams reject it', async () => {
+    const { error } = await runSettled(new NodeLengthCheck({ max: 100 }), [new ArrayBuffer(4)])
+    expect(error).toMatchObject({ code: 'ERR_INVALID_ARG_TYPE' })
+  })
+
   it('accepts strings, counted as UTF-8 bytes', async () => {
     const check = new NodeLengthCheck({ expected: 4 })
     expect((await runBytes(check, ['ab' as unknown as Uint8Array, 'é' as unknown as Uint8Array])).length).toBe(4)

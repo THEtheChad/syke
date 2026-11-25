@@ -66,12 +66,20 @@ the cap before it decides.
 Types: `Cap<T = Uint8Array>`, so record streams can be typed as
 `new Cap<Row>({ maxItems: 1000 })`.
 
+With `maxBytes`, chunks are counted by `byteLength`. In `syke/web` that's a
+`Uint8Array`, any other view (`DataView`, `Uint16Array`, ...), an
+`ArrayBuffer` or a `SharedArrayBuffer`; in `syke/node` the byte-mode stream
+turns views and strings into `Buffer`s first. A chunk that fits is passed on
+untouched. Anything else fails the stream with a `TypeError`.
+
 ## When the cap is reached
 
 - **`'error'`:** fails the stream with a `CapError` before passing on any of
   the chunk that overruns, so the consumer never sees more than the cap.
 - **`'truncate'`:** passes on the part of that chunk that fits (a `subarray`
-  view, not a copy) and ends the output normally.
+  view, not a copy) and ends the output normally. The cut is in bytes, so the
+  part of a chunk that isn't a `Uint8Array` (an `ArrayBuffer`, `DataView`,
+  `Uint16Array`, ...) comes out as a `Uint8Array` view of its first bytes.
 
 After truncating, the two runtimes treat the rest of the source differently:
 

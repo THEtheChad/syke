@@ -39,6 +39,12 @@ Exactly one of `bytesPerSecond` and `itemsPerSecond` is required.
 
 Types: `Throttle<T = Uint8Array>`.
 
+With `bytesPerSecond`, each chunk costs its `byteLength` and is passed on
+untouched. In `syke/web` that's a `Uint8Array`, any other view (`DataView`,
+`Uint16Array`, ...), an `ArrayBuffer` or a `SharedArrayBuffer`. In `syke/node`
+the byte-mode stream turns views and strings into `Buffer`s first. Anything
+else fails the stream with a `TypeError` rather than passing for free.
+
 ## How it works
 
 `Throttle` is a token bucket that allows debt. The bucket holds up to `burst`

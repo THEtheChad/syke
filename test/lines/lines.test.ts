@@ -1,4 +1,5 @@
 import { ReadableStream as NodeReadableStream } from 'node:stream/web'
+import { runInNewContext } from 'node:vm'
 import { describe, expect, it } from 'vitest'
 import { LineTooLongError, Lines as NodeLines } from '../../src/node.ts'
 import { LineTooLongError as WebLineTooLongError, Lines as WebLines } from '../../src/web.ts'
@@ -128,7 +129,26 @@ describe.each(runtimes)('Lines (%s) with text input', (runtime) => {
   })
 })
 
+describe.each(runtimes)('Lines (%s) with other byte views', (runtime) => {
+  const Lines = pick(runtime, { node: NodeLines, web: WebLines })
+
+  // A byte-mode Node stream turns any view into a Buffer first; the web one decodes it as is.
+  it('decodes the bytes of a DataView or Uint16Array', async () => {
+    const bytes = encode('ab\ncd\n')
+    const input = [new DataView(bytes.buffer, 0, 3), new Uint16Array(bytes.slice(3, 5).buffer), bytes.subarray(5)]
+    expect(await run(new Lines(), input)).toEqual(['ab', 'cd'])
+  })
+})
+
 describe('Lines (web)', () => {
+  it('decodes ArrayBuffer and SharedArrayBuffer chunks, from any realm', async () => {
+    const shared = new SharedArrayBuffer(3)
+    new Uint8Array(shared).set(encode('cd\n'))
+    const foreign = runInNewContext('new Uint8Array([101, 102, 10]).buffer') as ArrayBuffer
+    expect(foreign instanceof ArrayBuffer).toBe(false)
+    expect(await run(new WebLines(), [encode('ab\n').buffer, shared, foreign])).toEqual(['ab', 'cd', 'ef'])
+  })
+
   it('types its input to accept a TextDecoderStream (lib.dom)', () => {
     // Compile-time check: this only type-checks if the input side takes strings.
     const pipe = (text: ReadableStream<string>) => text.pipeThrough(new WebLines())
@@ -146,6 +166,7 @@ describe('Lines (web)', () => {
   it.each([
     ['a number', 42],
     ['an object', { length: 1 }],
+    ['an object posing as an ArrayBuffer', { byteLength: 1, [Symbol.toStringTag]: 'ArrayBuffer' }],
     ['null', null],
   ])('fails with a TypeError on %s', async (_, bad) => {
     const { error } = await runSettled(new WebLines(), [encode('a\n'), bad])

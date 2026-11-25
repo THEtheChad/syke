@@ -168,8 +168,16 @@ describe('Throttle (node)', () => {
 describe('Throttle (web)', () => {
   it('fails a byte throttle with a TypeError on a non-byte chunk rather than letting it through free', async () => {
     await expect(timedRun('web', new WebThrottle({ bytesPerSecond: 100 }), [bytes(1), 'abc'])).rejects.toThrow(
-      /^syke: Throttle with bytesPerSecond takes Uint8Array chunks, got string$/,
+      /^syke: Throttle with bytesPerSecond takes byte chunks \(an ArrayBuffer or a view of one\), got string$/,
     )
+  })
+
+  it('charges ArrayBuffer, DataView and other typed-array chunks by their bytes', async () => {
+    const input = [new ArrayBuffer(100), new DataView(new ArrayBuffer(100)), new Uint16Array(50), new Float64Array(25)]
+    const throttle = new WebThrottle<ArrayBufferView | ArrayBuffer>({ bytesPerSecond: 100, burst: 100 })
+    const output = await timedRun('web', throttle, input)
+    expect(output).toEqual(input.map((chunk, i) => ({ at: (i * 1000) as number, chunk })))
+    output.forEach(({ chunk }, i) => expect(chunk).toBe(input[i]))
   })
 
   it('takes chunks of any type with itemsPerSecond', async () => {
