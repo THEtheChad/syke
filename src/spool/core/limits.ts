@@ -23,12 +23,14 @@ export function parseMinFreeSpace(value: MinFreeSpace): FreeSpaceFloor {
   if (value === false) return null
 
   if (typeof value === 'number') {
-    if (!Number.isSafeInteger(value) || value < 0) {
+    // Any integer, as in 0.1.0: a floor past 2^53 bytes can never be met
+    // either way, so clamp it rather than reject it.
+    if (!Number.isInteger(value) || value < 0) {
       throw new RangeError(
         `syke: minFreeSpace must be a non-negative integer of bytes, a percentage like '10%', or false, got ${value}`,
       )
     }
-    return { bytes: value }
+    return { bytes: Math.min(value, Number.MAX_SAFE_INTEGER) }
   }
 
   // Not coerced: an object that stringifies to '10%' is a mistake. A

@@ -7,6 +7,10 @@ describe('parseMinFreeSpace()', () => {
     [0, { bytes: 0 }],
     [1024, { bytes: 1024 }],
     [Number.MAX_SAFE_INTEGER, { bytes: Number.MAX_SAFE_INTEGER }],
+    // Accepted in 0.1.0; past 2^53 it can never be met, so it clamps.
+    [2 ** 53, { bytes: Number.MAX_SAFE_INTEGER }],
+    [2 ** 60, { bytes: Number.MAX_SAFE_INTEGER }],
+    [Number.MAX_VALUE, { bytes: Number.MAX_SAFE_INTEGER }],
     ['0%', { percent: 0 }],
     ['10%', { percent: 10 }],
     ['12.5%', { percent: 12.5 }],
@@ -20,7 +24,6 @@ describe('parseMinFreeSpace()', () => {
     1.5,
     Number.NaN,
     Number.POSITIVE_INFINITY,
-    2 ** 53,
     '150%',
     '-1%',
     '10',
