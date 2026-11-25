@@ -366,8 +366,10 @@ Content-Security-Policy: worker-src 'self' blob:
   `navigator.storage.estimate()`, would drop below the floor. A percentage is
   of the quota, not the disk. Estimates are shared by every spool on the page
   and refreshed at most once a second, with each spool's growth counted in
-  between, so parallel spools can't all spend the same space. If the quota
-  can't be read, there's no floor.
+  between, so parallel spools can't all spend the same space. Space a spool
+  frees counts only once the browser has reclaimed it: an emptied OPFS file
+  once it's truncated, deleted IndexedDB records (which browsers reclaim
+  lazily) at the next estimate. If the quota can't be read, there's no floor.
 - **`maxDiskBytes`** caps how much one spool keeps in storage.
 - **The browser's quota** is always a hard limit: a write the browser refuses
   (`QuotaExceededError`) is kept and treated like any other limit (pausing new

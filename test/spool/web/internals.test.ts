@@ -195,3 +195,26 @@ describe('OPFS truncation and the quota budget', () => {
     await store.close()
   })
 })
+
+describe('IndexedDB reads and the quota budget', () => {
+  it('leaves deleted records counted until the next estimate (browsers reclaim them lazily)', async () => {
+    installFakeBrowser({ quota: 10 * MiB })
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(0)
+    vi.resetModules()
+    const quota = await import('../../../src/spool/web/quota.ts')
+    const { IdbStore } = await import('../../../src/spool/web/indexedDb.ts')
+    const floor = { bytes: 0 } as const
+    expect(await quota.storageBudget(floor)).toBe(10 * MiB)
+    const store = await IdbStore.open('lazy', 64 * 1024, Number.POSITIVE_INFINITY, () => {})
+    expect(store.room(MiB, MiB, false)).toBe(MiB)
+    quota.storageGrew(await store.write(new Uint8Array(MiB)))
+    expect(await quota.storageBudget(floor)).toBe(9 * MiB)
+    while (!store.empty) await store.read()
+    expect(await quota.storageBudget(floor)).toBe(9 * MiB)
+    // A fresh estimate (which here never counted IndexedDB) replaces the guess.
+    vi.setSystemTime(1000)
+    expect(await quota.storageBudget(floor)).toBe(10 * MiB)
+    await store.close()
+  })
+})
