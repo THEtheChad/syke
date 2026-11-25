@@ -125,11 +125,41 @@ describe('re-entrant listeners', () => {
     expect(events).toEqual([])
     expect(await readdir(tmp.path)).toEqual([])
   })
+
+  it("doesn't end the stream when a 'data' listener destroys it mid-way through a disk read", async () => {
+    // One read brings back every record, so they're pushed (and their 'data'
+    // events run) from the read's callback, and the file is drained by then.
+    const spool = new Spool({ objectMode: true, dir: tmp.path })
+    for (let i = 0; i < 10; i++) spool.write({ i })
+    spool.end()
+    await until(() => spool.writableFinished)
+    expect(fileSize(spool)).toBeGreaterThan(0)
+
+    const push = spool.push.bind(spool)
+    const pushedAfterDestroy: unknown[] = []
+    vi.spyOn(spool, 'push').mockImplementation((chunk) => {
+      if (spool.destroyed) pushedAfterDestroy.push(chunk)
+      return push(chunk)
+    })
+    let seen = 0
+    spool.on('data', () => {
+      if (++seen === 2) spool.destroy()
+    })
+    await closed(spool)
+    expect(seen).toBe(2)
+    expect(pushedAfterDestroy).toEqual([])
+  })
 })
 
 describe('empty chunks in byte mode', () => {
   it('are dropped rather than queued while the consumer is stalled', async () => {
     const spool = new Spool({ dir: tmp.path })
+    const pushedEmpty = vi.fn()
+    const push = spool.push.bind(spool)
+    vi.spyOn(spool, 'push').mockImplementation((chunk) => {
+      if (chunk !== null && (chunk as Buffer).length === 0) pushedEmpty()
+      return push(chunk)
+    })
     const out = sink()
     out.pause()
     const done = pipeline(spool, out.stream)
@@ -142,6 +172,8 @@ describe('empty chunks in byte mode', () => {
     out.resume()
     await done
     expect(out.received.toString()).toBe('tail')
+    // Queued empties would be pushed out once the consumer resumed.
+    expect(pushedEmpty).not.toHaveBeenCalled()
   })
 })
 
