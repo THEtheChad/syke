@@ -1,4 +1,4 @@
-import { describeChunk, isByteChunk } from '../shared/bytes.ts'
+import { type ByteChunk, describeChunk, isByteChunk } from '../shared/bytes.ts'
 import { SykeError } from '../shared/errors.ts'
 import type { Sink, Transformer } from '../shared/transformer.ts'
 
@@ -62,12 +62,16 @@ export class LineSplitter {
   }
 
   /** Feeds a chunk: bytes in `encoding`, or text that's already decoded. */
-  write(chunk: Uint8Array | string, onLine: (line: string, number: number) => void): void {
+  write(chunk: ByteChunk | string, onLine: (line: string, number: number) => void): void {
     let text: string
     // A string arriving mid-character ends that character (as U+FFFD) first.
     if (typeof chunk === 'string') text = this.#decoder.decode() + chunk
     else if (isByteChunk(chunk)) text = this.#decoder.decode(chunk, { stream: true })
-    else throw new TypeError(`syke: expected Uint8Array or string chunks, got ${describeChunk(chunk)}`)
+    else {
+      throw new TypeError(
+        `syke: expected byte chunks (an ArrayBuffer or a view of one) or strings, got ${describeChunk(chunk)}`,
+      )
+    }
     this.#split(this.#text(text), onLine)
   }
 
@@ -129,14 +133,14 @@ function stripCR(line: string): string {
   return line.endsWith('\r') ? line.slice(0, -1) : line
 }
 
-export class LinesCore implements Transformer<Uint8Array | string, string> {
+export class LinesCore implements Transformer<ByteChunk | string, string> {
   readonly #splitter: LineSplitter
 
   constructor(options: LinesOptions) {
     this.#splitter = new LineSplitter(options)
   }
 
-  transform(chunk: Uint8Array | string, sink: Sink<string>): void {
+  transform(chunk: ByteChunk | string, sink: Sink<string>): void {
     this.#splitter.write(chunk, (line) => sink.push(line))
   }
 

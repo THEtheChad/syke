@@ -172,7 +172,7 @@ describe('Lines (web)', () => {
   ])('fails with a TypeError on %s', async (_, bad) => {
     const { error } = await runSettled(new WebLines(), [encode('a\n'), bad])
     expect(error).toBeInstanceOf(TypeError)
-    expect(error.message).toMatch(/^syke: expected Uint8Array or string chunks, got /)
+    expect(error.message).toMatch(/^syke: expected byte chunks \(an ArrayBuffer or a view of one\) or strings, got /)
   })
 })
 

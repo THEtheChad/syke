@@ -36,7 +36,10 @@ for await (const line of res.body.pipeThrough(new Lines())) render(line)
   `TextDecoder` does. In `syke/web` bytes can come as a `Uint8Array`, any
   other view (`DataView`, ...), an `ArrayBuffer` or a `SharedArrayBuffer`; in
   `syke/node` the byte-mode stream turns views into `Buffer`s first. A chunk
-  that's neither bytes nor a string fails the stream with a `TypeError`.
+  that's neither bytes nor a string fails the stream with a `TypeError`. The
+  web `Lines` is typed to match, as a `TransformStream<ByteChunk | string,
+  string>` (`ByteChunk` is exported from `syke/web`), so a
+  `ReadableStream<ArrayBuffer>` pipes through it.
 - **Strings:** a string chunk is taken as text that's already decoded (in both
   `syke/node` and `syke/web`, e.g. after `TextDecoderStream`). In `syke/node`
   the output side is in object mode, one string per chunk.

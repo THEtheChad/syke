@@ -1,8 +1,8 @@
 // Compiled against the built declarations (dist/), as a consumer would:
 // pnpm typecheck:dist, after pnpm build. Nothing here runs.
 //
-// Any byte chunk through the web LengthCheck.
-import { type ByteChunk, LengthCheck } from '@thethechad/syke/web'
+// Any byte chunk through the web LengthCheck, Lines and NdjsonParse.
+import { type ByteChunk, LengthCheck, Lines, NdjsonParse } from '@thethechad/syke/web'
 
 type Equals<X, Y> = (<T>() => T extends X ? 1 : 2) extends <T>() => T extends Y ? 1 : 2 ? true : false
 declare function exact<A, B>(ok: Equals<A, B>): void
@@ -32,6 +32,9 @@ declare const someBytes: ReadableStream<BodyChunk | DataView>
 typeOf(someBytes.pipeThrough(new LengthCheck({ max: 4 }))).is<ReadableStream<Uint8Array | DataView>>(true)
 exact<ByteChunk, ArrayBufferLike | ArrayBufferView>(true)
 
+typeOf(buffers.pipeThrough(new LengthCheck({ max: 4 })).pipeThrough(new Lines())).is<ReadableStream<string>>(true)
+typeOf(views.pipeThrough(new NdjsonParse<{ a: number }>())).is<ReadableStream<{ a: number }>>(true)
+typeOf(words.pipeThrough(new Lines())).is<ReadableStream<string>>(true)
 
 // @ts-expect-error a string stream
 strings.pipeThrough(new LengthCheck({ max: 4 }))
