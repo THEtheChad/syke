@@ -66,7 +66,7 @@ function runChild(code: string) {
 describe('re-entrant listeners', () => {
   it("doesn't start a second disk read when a 'data' listener calls read()", async () => {
     const data = randomBytes(MiB)
-    const spool = new Spool({ dir: tmp.path, memoryThreshold: 64 * KiB, chunkSize: 16 * KiB })
+    const spool = new Spool({ dir: tmp.path, memoryThreshold: 64 * KiB, chunkSize: 64 * KiB })
     await spillWithoutConsumer(spool, data)
     expect(fileSize(spool)).toBeGreaterThan(0)
 
@@ -102,7 +102,7 @@ describe('re-entrant listeners', () => {
   })
 
   it("stops pushing when a 'data' listener destroys the stream mid-backlog", async () => {
-    const spool = new Spool({ dir: tmp.path, memoryThreshold: 64 * KiB, chunkSize: 16 * KiB })
+    const spool = new Spool({ dir: tmp.path, memoryThreshold: 64 * KiB, chunkSize: 64 * KiB })
     await spillWithoutConsumer(spool, randomBytes(MiB))
 
     const push = spool.push.bind(spool)
@@ -632,7 +632,9 @@ describe('write batching', () => {
   it('coalesces small chunks queued behind a spill into fewer, larger writes', async () => {
     const write = vi.spyOn(FileHandleProto, 'write')
     const data = randomBytes(MiB)
-    const spool = new Spool({ dir: tmp.path, minFreeSpace: false })
+    // chunkSize defaults to the high-water mark, which is 16 KiB on Windows
+    // and 64 KiB elsewhere, so pin it.
+    const spool = new Spool({ dir: tmp.path, minFreeSpace: false, chunkSize: 64 * KiB })
     await spillWithoutConsumer(spool, data, 512)
     // 2048 chunks of 512 bytes; 64 KiB writes need about 16.
     expect(write.mock.calls.length).toBeLessThan(64)
