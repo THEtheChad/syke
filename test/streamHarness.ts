@@ -1,4 +1,4 @@
-import { Readable } from 'node:stream'
+import { Duplex, Readable } from 'node:stream'
 import type { Runtime } from './harness.ts'
 
 /**
@@ -262,4 +262,51 @@ export const untouched: {
   sync: ['s1', 's2'],
   async: ['a1', 'a2'],
   array: ['r1'],
+}
+
+/**
+ * A Node source that outlives the end of its readable side: a half-open
+ * `Duplex` (its writable side stays open) or a `Readable` that doesn't
+ * destroy itself once it ends. It emits `bytes`, then ends.
+ */
+export interface EndedSource {
+  stream: Readable
+  /** Not destroyed, and (for the `Duplex`) still writable. */
+  alive(): boolean
+}
+
+export type EndedSourceKind = 'half-open Duplex' | 'Readable with autoDestroy: false'
+export const endedSourceKinds: EndedSourceKind[] = ['half-open Duplex', 'Readable with autoDestroy: false']
+
+/**
+ * Whether reading this kind of source to its end leaves it open on this Node.
+ * Some Node releases (22 and 26, as of writing) have a stream async iterator
+ * that destroys a half-open `Duplex` itself once it reaches the end, before a
+ * combinator could stop it; others (24) keep it open.
+ */
+export const staysOpenAtEnd: Record<EndedSourceKind, boolean> = {
+  'half-open Duplex': await iteratingToTheEndLeavesOpen('half-open Duplex'),
+  'Readable with autoDestroy: false': await iteratingToTheEndLeavesOpen('Readable with autoDestroy: false'),
+}
+
+async function iteratingToTheEndLeavesOpen(kind: EndedSourceKind): Promise<boolean> {
+  const source = endedSource(kind)
+  source.stream.on('error', () => {})
+  for await (const _ of source.stream);
+  const open = source.alive()
+  source.stream.destroy()
+  return open
+}
+
+export function endedSource(kind: EndedSourceKind, bytes: Uint8Array = Uint8Array.of(1, 2)): EndedSource {
+  function read(this: Readable) {
+    this.push(bytes)
+    this.push(null)
+  }
+  if (kind === 'half-open Duplex') {
+    const stream = new Duplex({ allowHalfOpen: true, read, write: (_chunk, _encoding, done) => done() })
+    return { stream, alive: () => !stream.destroyed && stream.writable }
+  }
+  const stream = new Readable({ autoDestroy: false, read })
+  return { stream, alive: () => !stream.destroyed }
 }
