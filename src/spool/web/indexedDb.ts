@@ -1,4 +1,3 @@
-import { storageFreed } from './quota.ts'
 import type { SpoolStorage, SpoolStore } from './store.ts'
 
 export const DB_NAME = 'syke-spool'
@@ -219,7 +218,8 @@ export class IdbStore implements SpoolStore {
     this.#sizes.splice(0, count)
     this.#head += count
     this.#stored -= bytes
-    storageFreed(bytes)
+    // Not given back to the quota budget: browsers reclaim deleted records
+    // lazily (Chrome on compaction), so the next estimate is the authority.
     return records as Uint8Array[]
   }
 

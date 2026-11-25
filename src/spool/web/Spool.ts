@@ -40,22 +40,29 @@ export interface SpoolBaseOptions {
   storage?: SpoolStorageChoice
 }
 
+/**
+ * Options for a byte or object-mode spool. `ByteSpoolOptions` and
+ * `ObjectSpoolOptions` are stricter, for when the mode is known up front.
+ */
+export interface SpoolOptions<T = Uint8Array> extends SpoolBaseOptions {
+  /** Carry arbitrary values instead of bytes. They're encoded with `codec` only when spilled. */
+  objectMode?: boolean
+  /** Turns records into bytes for storage, in object mode. Defaults to `jsonCodec`. */
+  codec?: Codec<T>
+}
+
 /** Options for a byte spool: no `objectMode`, so no `codec`. */
-export interface ByteSpoolOptions extends SpoolBaseOptions {
+export interface ByteSpoolOptions extends SpoolOptions<Uint8Array> {
   /** Carry bytes (the default). */
   objectMode?: false
   codec?: undefined
 }
 
 /** Options for an object-mode spool, carrying records of type `T`. */
-export interface ObjectSpoolOptions<T = unknown> extends SpoolBaseOptions {
+export interface ObjectSpoolOptions<T = unknown> extends SpoolOptions<T> {
   /** Carry arbitrary values instead of bytes. They're encoded with `codec` only when spilled. */
   objectMode: true
-  /** Turns records into bytes for storage, in object mode. Defaults to `jsonCodec`. */
-  codec?: Codec<T>
 }
-
-export type SpoolOptions<T = unknown> = ByteSpoolOptions | ObjectSpoolOptions<T>
 
 /** Anything `Spool.from()` can read from. */
 export type SpoolSource<T = Uint8Array> = ReadableStream<T> | Iterable<T> | AsyncIterable<T>
@@ -67,6 +74,8 @@ export type SpoolSource<T = Uint8Array> = ReadableStream<T> | Iterable<T> | Asyn
  */
 const BATCH_BYTES = 1024 * 1024
 const DEFAULT_CHUNK_SIZE = 64 * 1024
+/** Most a chunk read back may pin of its buffer, as a multiple of its own size, before it's copied. */
+const PIN_RATIO = 16
 /** How often to recheck the storage quota while waiting on `minFreeSpace`. */
 const FREE_SPACE_POLL_MS = 250
 
@@ -141,14 +150,16 @@ export class Spool<T = Uint8Array> implements ReadableWritablePair<T, T> {
    * Accepts a `ReadableStream` or an iterable or async iterable of chunks.
    * Errors and cancellation propagate both ways, as with `pipeTo`.
    */
-  static from(source: SpoolSource<Uint8Array>, options?: ByteSpoolOptions): Spool<Uint8Array>
+  static from<T extends Uint8Array = Uint8Array>(source: SpoolSource<T>, options?: ByteSpoolOptions): Spool<T>
   /** Reads records from `source`: `Spool.from(records, { objectMode: true })`. */
   static from<T>(source: SpoolSource<T>, options: ObjectSpoolOptions<T>): Spool<T>
+  /** Reads bytes or records from `source`, as `options.objectMode` says. */
+  static from<T = Uint8Array>(source: SpoolSource<T>, options: SpoolOptions<T> | undefined): Spool<T>
   static from<T>(source: SpoolSource<T>, options?: SpoolOptions<T>): Spool<T> {
     const readable = toReadableStream(source)
     // pipeTo() would reject without touching the spool, leaving it open forever.
     if (readable.locked) throw new TypeError('syke: Spool.from() source stream is locked (already being read)')
-    const spool = new Spool<T>(options as ObjectSpoolOptions<T>)
+    const spool = new Spool<T>(options)
     // A failed source or a cancelled spool already reached the spool through
     // the pipe (then #fail is a no-op); anything else must not leave it hanging.
     readable.pipeTo(spool.writable).catch((error: unknown) => spool.#fail(error))
@@ -159,7 +170,7 @@ export class Spool<T = Uint8Array> implements ReadableWritablePair<T, T> {
   constructor(options?: ByteSpoolOptions)
   /** An object-mode spool, carrying records of type `T`. */
   constructor(options: ObjectSpoolOptions<T>)
-  /** A byte or object-mode spool from a union options value. */
+  /** A byte or object-mode spool, as `options.objectMode` says. */
   constructor(options?: SpoolOptions<T>)
   constructor(options: SpoolOptions<T> = {}) {
     const { chunkSize, memoryThreshold, minFreeSpace, maxDiskBytes, onLimit, storage, objectMode, codec } = options
@@ -244,14 +255,14 @@ export class Spool<T = Uint8Array> implements ReadableWritablePair<T, T> {
     }
 
     // The consumer is waiting and nothing is queued ahead: hand it straight over.
-    if (this.#wantsData && this.#memory.length === 0 && !this.#behind()) {
+    if (this.#wantsData && this.#memory.length === 0 && !this.#spilled()) {
       this.#deliver(chunk)
       return
     }
 
     // Memory only takes data while nothing is spilled, so memory is always older.
     const size = this.#codec ? 1 : (chunk as Uint8Array).byteLength
-    if (!this.#behind() && this.#memorySize + size <= this.#memoryThreshold) {
+    if (!this.#spilled() && this.#memorySize + size <= this.#memoryThreshold) {
       this.#memory.push(chunk)
       this.#memorySize += size
       return
@@ -268,7 +279,12 @@ export class Spool<T = Uint8Array> implements ReadableWritablePair<T, T> {
     this.#pump()
   }
 
-  /** Something is queued in storage, in flight or in the batch. */
+  /**
+   * Something is queued in storage, in flight or in the batch: a new chunk
+   * must queue behind it rather than overtake it through memory. (Part of a
+   * record waiting in the decoder implies this: the rest of its frame is
+   * still spilled, since `#write()` appends a whole frame before the next.)
+   */
   #spilled(): boolean {
     return (
       !this.#batch.empty ||
@@ -277,14 +293,6 @@ export class Spool<T = Uint8Array> implements ReadableWritablePair<T, T> {
       this.#out.length > 0 ||
       !(this.#store?.empty ?? true)
     )
-  }
-
-  /**
-   * Spilled data, or part of a record read back, is waiting: a new chunk
-   * must queue behind it rather than overtake it through memory.
-   */
-  #behind(): boolean {
-    return this.#spilled() || (this.#decoder?.pendingBytes ?? 0) > 0
   }
 
   #startWriter() {
@@ -504,9 +512,11 @@ export class Spool<T = Uint8Array> implements ReadableWritablePair<T, T> {
     }
     for (let offset = 0; offset < bytes.byteLength; offset += this.#chunkSize) {
       const piece = bytes.subarray(offset, offset + this.#chunkSize)
-      // A small chunk of a large buffer (an IndexedDB record, the batch) gets
-      // its own copy, so a consumer keeping it doesn't keep the whole buffer.
-      this.#out.push(piece.byteLength * 2 < piece.buffer.byteLength ? piece.slice() : piece)
+      // A chunk much smaller than its buffer (a short batch in a large one, a
+      // small chunkSize of a 1 MiB IndexedDB record) gets its own copy, so a
+      // consumer keeping it keeps at most PIN_RATIO times its size. Default
+      // 64 KiB chunks of a 1 MiB record share it.
+      this.#out.push(piece.byteLength * PIN_RATIO < piece.buffer.byteLength ? piece.slice() : piece)
     }
   }
 

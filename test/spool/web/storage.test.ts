@@ -474,6 +474,47 @@ describe('OPFS file lifecycle', () => {
   })
 })
 
+describe('OPFS truncation', () => {
+  it('does not truncate away a write in flight when the reader empties the file', async () => {
+    const browser = installFakeBrowser()
+    const { Spool } = await freshPage()
+    const spool = new Spool({ storage: 'opfs', chunkSize: 64 * KiB })
+    const writer = spool.writable.getWriter()
+    const reader = spool.readable.getReader()
+    const [a, b, c] = [randomBytes(64 * KiB), randomBytes(64 * KiB), randomBytes(64 * KiB)]
+    const macrotask = () => new Promise((resolve) => setTimeout(resolve))
+    browser.holdReplies.add('write')
+
+    // `a` goes straight to the waiting consumer; `b` is stored.
+    await writer.write(a)
+    await writer.write(b)
+    await waitFor(() => browser.heldReplies === 1)
+    browser.releaseReplies()
+    await macrotask()
+    // `c` is written by the worker, but the page hasn't heard back yet.
+    await writer.write(c)
+    await waitFor(() => browser.heldReplies === 1)
+
+    // Reading `b` empties the file as far as the page knows, with `c` in flight.
+    expect(Buffer.from((await reader.read()).value as Uint8Array).equals(a)).toBe(true)
+    expect(Buffer.from((await reader.read()).value as Uint8Array).equals(b)).toBe(true)
+    await macrotask()
+    expect(browser.truncates).toBe(0)
+
+    browser.holdReplies.clear()
+    browser.releaseReplies()
+    await writer.close()
+    const rest: Uint8Array[] = []
+    for (;;) {
+      const { value, done } = await reader.read()
+      if (done) break
+      rest.push(value)
+    }
+    expect(Buffer.concat(rest).equals(c)).toBe(true)
+    await spool.closed
+  })
+})
+
 describe('waiting at a limit', () => {
   it('does not poll at maxDiskBytes: only the consumer reading can make room', async () => {
     installFakeBrowser()

@@ -52,13 +52,29 @@ export interface FakeBrowser {
   idbPutError: string
   /** OPFS `truncate()` calls. */
   truncates: number
+  /** Makes OPFS `truncate()` throw a `DOMException` with this name. */
+  truncateError: string | null
+  /**
+   * Worker replies to these ops (`'write'`, `'truncate'`, ...) are held,
+   * after the worker has run the request, until `releaseReplies()`.
+   */
+  holdReplies: Set<string>
+  /** Delivers the held replies, in order. */
+  releaseReplies(): void
+  /** How many replies are held. */
+  readonly heldReplies: number
+  /** How many coming `postMessage()` calls inside the worker throw `DataCloneError`. */
+  workerPostFailures: number
 }
 
 let current: FakeBrowser | null = null
+let heldReplies: (() => void)[] = []
 
 export function installFakeBrowser(options: FakeBrowserOptions = {}): FakeBrowser {
   const root = new FakeDirectory(options)
   const factory = new IDBFactory()
+  const held: (() => void)[] = []
+  heldReplies = held
   const browser: FakeBrowser = {
     root,
     options,
@@ -68,6 +84,15 @@ export function installFakeBrowser(options: FakeBrowserOptions = {}): FakeBrowse
     idbPutFailures: 0,
     idbPutError: 'QuotaExceededError',
     truncates: 0,
+    truncateError: null,
+    workerPostFailures: 0,
+    holdReplies: new Set(),
+    releaseReplies: () => {
+      for (const deliver of held.splice(0)) deliver()
+    },
+    get heldReplies() {
+      return held.length
+    },
     opfsFiles: () => [...root.files.keys()],
     idbRecords: () => countRecords(factory),
   }
@@ -276,6 +301,7 @@ export class FakeSyncAccessHandle {
 
   truncate(size: number): void {
     if (current) current.truncates++
+    if (current?.truncateError) throw new DOMException('the truncate failed', current.truncateError)
     this.#file.size = Math.min(this.#file.size, size)
     if (size === 0) this.#file.data = new Uint8Array(0)
   }
@@ -291,6 +317,8 @@ export class FakeSyncAccessHandle {
 export class FakeWorker extends EventTarget {
   #handlers: ((event: { data: unknown }) => void) | null = null
   readonly #handles = new Set<FakeSyncAccessHandle>()
+  // The op of each request, by id, so replies to some ops can be held.
+  readonly #ops = new Map<number, string>()
   readonly #started: Promise<void>
   #terminated = false
 
@@ -329,10 +357,19 @@ export class FakeWorker extends EventTarget {
       onmessage: null as ((event: { data: unknown }) => void) | null,
       postMessage: (data: unknown, transfer: Transferable[] = []) => {
         if (this.#terminated) return
+        if (browser.workerPostFailures > 0) {
+          browser.workerPostFailures--
+          throw new DOMException('could not clone the reply', 'DataCloneError')
+        }
         const copy = structuredClone(data, { transfer: transfer as never[] })
-        setTimeout(() => {
+        const id = (data as { id?: number }).id
+        const op = id === undefined ? undefined : this.#ops.get(id)
+        if (id !== undefined) this.#ops.delete(id)
+        const deliver = () => {
           if (!this.#terminated) this.dispatchEvent(new MessageEvent('message', { data: copy }))
-        })
+        }
+        if (op !== undefined && browser.holdReplies.has(op)) heldReplies.push(deliver)
+        else setTimeout(deliver)
       },
     }
     const blob = resolveObjectURL(url)
@@ -345,6 +382,8 @@ export class FakeWorker extends EventTarget {
 
   postMessage(data: unknown, transfer: Transferable[] = []): void {
     if (this.#terminated) return
+    const { id, op } = (data ?? {}) as { id?: unknown; op?: unknown }
+    if (typeof id === 'number' && typeof op === 'string') this.#ops.set(id, op)
     const copy = structuredClone(data, { transfer: transfer as never[] })
     void this.#started.then(() => {
       if (!this.#terminated) this.#handlers?.({ data: copy })

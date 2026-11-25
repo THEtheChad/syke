@@ -1,6 +1,6 @@
 import { forceCloseDatabase } from 'fake-indexeddb'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { installFakeBrowser, useFakeBrowser } from './fakeBrowser.ts'
+import { installFakeBrowser, useFakeBrowser, waitFor } from './fakeBrowser.ts'
 
 const MiB = 1024 * 1024
 
@@ -109,9 +109,11 @@ describe('the spool database connection', () => {
     const second = await idb.openDb()
     expect(second).not.toBe(first)
     expect(isOpen(second)).toBe(true)
-    // Releasing the dead connection leaves the new one alone.
+    // Releasing the dead connection leaves the new one alone, still shared.
     idb.closeDb(first)
     expect(isOpen(second)).toBe(true)
+    expect(await idb.openDb()).toBe(second)
+    idb.closeDb(second)
     idb.closeDb(second)
     expect(isOpen(second)).toBe(false)
   })
@@ -148,5 +150,98 @@ describe('the spool database connection', () => {
     ;(req.onsuccess as () => void)()
     expect(db.close).toHaveBeenCalledOnce()
     vi.unstubAllGlobals()
+  })
+})
+
+describe('OPFS truncation and the quota budget', () => {
+  const floor = { bytes: 0 } as const
+  const macrotask = () => new Promise((resolve) => setTimeout(resolve))
+
+  /** A fresh page's quota module and an OPFS store holding 1 MiB, counted as growth. */
+  async function storeWithOneMiB() {
+    const browser = installFakeBrowser({ quota: 10 * MiB })
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(0)
+    vi.resetModules()
+    const quota = await import('../../../src/spool/web/quota.ts')
+    const { OpfsStore } = await import('../../../src/spool/web/opfs.ts')
+    expect(await quota.storageBudget(floor)).toBe(10 * MiB)
+    const store = await OpfsStore.open('accounting', 64 * 1024, Number.POSITIVE_INFINITY, () => {})
+    expect(store.room(MiB, MiB, false)).toBe(MiB)
+    quota.storageGrew(await store.write(new Uint8Array(MiB)))
+    expect(await quota.storageBudget(floor)).toBe(9 * MiB)
+    return { browser, quota, store }
+  }
+
+  it('gives the space back only once the truncate is done', async () => {
+    const { browser, quota, store } = await storeWithOneMiB()
+    browser.holdReplies.add('truncate')
+    while (!store.empty) await store.read()
+    // The worker has truncated, but the page hasn't heard yet.
+    await waitFor(() => browser.heldReplies === 1)
+    expect(await quota.storageBudget(floor)).toBe(9 * MiB)
+    browser.releaseReplies()
+    await macrotask()
+    expect(await quota.storageBudget(floor)).toBe(10 * MiB)
+    await store.close()
+  })
+
+  it('does not give the space back when the truncate fails', async () => {
+    const { browser, quota, store } = await storeWithOneMiB()
+    browser.truncateError = 'InvalidStateError'
+    while (!store.empty) await store.read()
+    await waitFor(() => browser.truncates === 1)
+    await macrotask()
+    await macrotask()
+    expect(await quota.storageBudget(floor)).toBe(9 * MiB)
+    await store.close()
+  })
+})
+
+describe('IndexedDB reads and the quota budget', () => {
+  it('leaves deleted records counted until the next estimate (browsers reclaim them lazily)', async () => {
+    installFakeBrowser({ quota: 10 * MiB })
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(0)
+    vi.resetModules()
+    const quota = await import('../../../src/spool/web/quota.ts')
+    const { IdbStore } = await import('../../../src/spool/web/indexedDb.ts')
+    const floor = { bytes: 0 } as const
+    expect(await quota.storageBudget(floor)).toBe(10 * MiB)
+    const store = await IdbStore.open('lazy', 64 * 1024, Number.POSITIVE_INFINITY, () => {})
+    expect(store.room(MiB, MiB, false)).toBe(MiB)
+    quota.storageGrew(await store.write(new Uint8Array(MiB)))
+    expect(await quota.storageBudget(floor)).toBe(9 * MiB)
+    while (!store.empty) await store.read()
+    expect(await quota.storageBudget(floor)).toBe(9 * MiB)
+    // A fresh estimate (which here never counted IndexedDB) replaces the guess.
+    vi.setSystemTime(1000)
+    expect(await quota.storageBudget(floor)).toBe(10 * MiB)
+    await store.close()
+  })
+})
+
+describe('the OPFS worker queue', () => {
+  it('keeps serving requests after a reply that could not be sent at all', async () => {
+    const browser = installFakeBrowser()
+    vi.resetModules()
+    const { OpfsStore } = await import('../../../src/spool/web/opfs.ts')
+    const first = await OpfsStore.open('first', 64 * 1024, Number.POSITIVE_INFINITY, () => {})
+    // Both the reply and the error reported in its place fail to send: this
+    // request is never answered (until the worker is terminated).
+    browser.workerPostFailures = 2
+    const lost = OpfsStore.open('lost', 64 * 1024, Number.POSITIVE_INFINITY, () => {})
+    lost.catch(() => {})
+    await waitFor(() => browser.workerPostFailures === 0)
+    // Later requests, from any spool on the page, still run.
+    const next = await Promise.race([
+      OpfsStore.open('next', 64 * 1024, Number.POSITIVE_INFINITY, () => {}),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('the worker stopped answering')), 1000)),
+    ])
+    expect(next.room(1024, 1024, true)).toBe(1024)
+    await next.write(new Uint8Array(1024))
+    expect(await next.read()).toEqual([new Uint8Array(1024)])
+    await next.close()
+    await first.close()
   })
 })
