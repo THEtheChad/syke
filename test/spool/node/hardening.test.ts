@@ -546,33 +546,53 @@ describe('reclaiming disk space', () => {
     expect(out.received.equals(data)).toBe(true)
   })
 
-  it('holds new writes until a slow truncate finishes', async () => {
+  it('holds a spill that arrives mid-truncate until the truncate finishes', async () => {
     const truncate = FileHandleProto.truncate
+    let truncating = false
     let truncates = 0
     vi.spyOn(FileHandleProto, 'truncate').mockImplementation(async function (this: FileHandle, length?: number) {
       truncates++
-      await sleep(30)
+      truncating = true
+      await sleep(50)
+      truncating = false
       return truncate.call(this, length)
     })
-    const data = randomBytes(2 * MiB)
-    const spool = new Spool({ dir: tmp.path, chunkSize: 16 * KiB })
-    const src = new Readable({ read() {} })
-    const out = sink()
-    const done = pipeline(src, spool, out.stream)
+    const K = 16 * KiB
+    const spool = new Spool({ dir: tmp.path, chunkSize: K, highWaterMark: K, minFreeSpace: false })
+    const errors: Error[] = []
+    spool.on('error', (error) => errors.push(error))
+    const first = randomBytes(8 * K)
+    const second = randomBytes(4 * K)
+    spool.write(first)
+    await until(() => spool.writableLength === 0)
 
-    // Spill, drain, and refill straight away, so writes arrive mid-truncate.
-    let sent = 0
-    for (let round = 0; round < 8; round++) {
-      out.pause()
-      const end = sent + data.length / 8
-      for (; sent < end; sent += 32 * KiB) src.push(data.subarray(sent, sent + 32 * KiB))
-      await until(() => src.readableLength === 0 && spool.writableLength === 0)
-      await drain(out, sent)
+    // Read the backlog until its last chunk sits in the full readable buffer:
+    // the file is drained and being truncated, and the spool doesn't want
+    // data, so the next write must spill rather than pass straight through.
+    const received: Buffer[] = []
+    let total = 0
+    while (total < 7 * K || spool.readableLength < K) {
+      const chunk = spool.read() as Buffer | null
+      if (chunk) {
+        received.push(chunk)
+        total += chunk.length
+      } else {
+        await sleep(1)
+      }
     }
-    src.push(null)
-    await done
-    expect(truncates).toBeGreaterThan(0)
-    expect(out.received.equals(data)).toBe(true)
+    await until(() => truncating)
+    spool.write(second)
+    spool.end()
+    expect(truncating).toBe(true)
+    // Read nothing more until the truncate is done, or a spill that raced it
+    // could be read back before the file is cut.
+    await until(() => !truncating)
+    await sleep(10)
+
+    for await (const chunk of spool) received.push(chunk as Buffer)
+    expect(errors).toEqual([])
+    expect(truncates).toBe(1)
+    expect(Buffer.concat(received).equals(Buffer.concat([first, second]))).toBe(true)
   })
 })
 
