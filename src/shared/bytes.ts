@@ -60,6 +60,18 @@ export function asUint8Array(source: ByteChunk): Uint8Array {
   return new Uint8Array(source)
 }
 
+/**
+ * `chunk` itself, unless it's a `SharedArrayBuffer` or a view of one: then a
+ * `Uint8Array` copy of its bytes. Browsers' `TextDecoder.decode()` (and other
+ * APIs) refuse shared memory, which Node accepts.
+ */
+export function unshared(chunk: ByteChunk): ByteChunk {
+  // Anything but an ArrayBuffer under it is shared: this works for a buffer
+  // from another realm, and in one with no SharedArrayBuffer global.
+  if (isBuffer(ArrayBuffer.isView(chunk) ? chunk.buffer : chunk, bufferByteLength)) return chunk
+  return asUint8Array(chunk).slice()
+}
+
 /** The size of a chunk in bytes, failing a byte-counting utility with a clear `TypeError` when it isn't bytes. */
 export function byteLengthOf(utility: string, chunk: unknown): number {
   if (!isByteChunk(chunk)) {
