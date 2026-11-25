@@ -10,7 +10,35 @@ import { frame, idbRows, opfsSpoolFiles, randomData, readAll, sleep, spillStalle
 const KiB = 1024
 const MiB = 1024 * KiB
 const results = { browser: new URLSearchParams(location.search).get('browser') ?? 'manual', env: {}, tests: [] }
+const autoRun = new URLSearchParams(location.search).has('auto')
 const stalls = stallMonitor()
+
+let posted = false
+/** Sends the results to scripts/test-browser.mjs, once. */
+async function postResults() {
+  if (posted || !autoRun) return
+  posted = true
+  await fetch('/results', { method: 'POST', body: JSON.stringify(results) })
+}
+
+/** Records a failure that no test caught. */
+function trap(name, error) {
+  const entry = { name, ok: false, detail: String(error?.stack ?? error), ms: 0, longestStallMs: 0 }
+  results.tests.push(entry)
+  results.ok = false
+  render(entry)
+}
+
+// syke promises never to cause an unhandled rejection: any is a failure. The run goes on.
+addEventListener('unhandledrejection', (event) => trap('unhandled rejection', event.reason))
+// An uncaught error may be this module itself failing (a top-level await
+// rejecting), after which nothing would report: report what there is now
+// rather than leave the runner waiting out its timeout.
+addEventListener('error', (event) => {
+  trap('uncaught error', event.error ?? event.message)
+  document.title = 'FAIL'
+  void postResults()
+})
 
 async function test(name, fn, timeoutMs = 120_000) {
   const started = performance.now()
@@ -89,7 +117,9 @@ for (const storage of ['auto', 'opfs', 'indexeddb']) {
     const out = await readAll(spool.readable)
     const readMs = performance.now() - readStart
     check(equalBytes(concat(out), data), 'data differs')
-    check(Math.max(...out.slice(1).map((piece) => piece.byteLength)) <= 300_000, 'oversized chunk')
+    // Only the first chunk passes straight through; the rest come back from storage in chunkSize pieces.
+    const largest = Math.max(...out.slice(1).map((piece) => piece.byteLength))
+    check(largest <= 64 * KiB, `a ${largest}-byte chunk is over chunkSize`)
     await spool.closed
     await expectClean('after end')
     return `storage=${spool.storage}; 32 MiB; write ${mbps(data.byteLength, writeMs)}, drain ${mbps(data.byteLength, readMs)}`
@@ -297,12 +327,12 @@ await test('a minified bundle works (inline worker survives minification)', asyn
 })
 
 await environment()
+// Let any late unhandled rejection be reported before the results go.
+await sleep(100)
 results.ok = results.tests.every((entry) => entry.ok)
 results.longestStallMs = Math.max(...results.tests.map((entry) => entry.longestStallMs))
 document.title = results.ok ? 'PASS' : 'FAIL'
-if (new URLSearchParams(location.search).has('auto')) {
-  await fetch('/results', { method: 'POST', body: JSON.stringify(results) })
-}
+await postResults()
 
 function render(entry) {
   const row = document.createElement('tr')

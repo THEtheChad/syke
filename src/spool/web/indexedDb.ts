@@ -5,53 +5,77 @@ const STORE = 'chunks'
 /** Bytes to read back per transaction: transactions are slow (up to ~2.5 ms in Edge). */
 const READ_BATCH_BYTES = 1024 * 1024
 
-let connection: Promise<IDBDatabase> | null = null
-let users = 0
+/**
+ * One connection to the spool database and how many spools use it. A
+ * connection that is replaced (another tab upgraded the schema, or the
+ * browser closed it) keeps its own count, so its users still release it.
+ */
+interface Connection {
+  readonly db: Promise<IDBDatabase>
+  users: number
+}
 
-function request<T>(req: IDBRequest<T>): Promise<T> {
-  return new Promise((resolve, reject) => {
-    req.onsuccess = () => resolve(req.result)
-    req.onerror = () => reject(req.error)
+let connection: Connection | null = null
+const connectionOf = new WeakMap<IDBDatabase, Connection>()
+
+function connect(): Connection {
+  let conn!: Connection
+  const forget = () => {
+    if (connection === conn) connection = null
+  }
+  const db = new Promise<IDBDatabase>((resolve, reject) => {
+    if (typeof indexedDB === 'undefined') throw new Error('syke: this runtime has no IndexedDB')
+    let gaveUp = false
+    const req = indexedDB.open(DB_NAME, 1)
+    // One store shared by every spool, keyed [spoolId, seq]: adding a store
+    // per spool would need a version change, which blocks other tabs.
+    req.onupgradeneeded = () => req.result.createObjectStore(STORE)
+    req.onsuccess = () => {
+      const opened = req.result
+      // Opened after the open was given up on (blocked): nobody will use or close it.
+      if (gaveUp) return opened.close()
+      connectionOf.set(opened, conn)
+      // Let a newer schema (another tab) take over rather than block it.
+      opened.onversionchange = () => {
+        opened.close()
+        forget()
+      }
+      // The browser closed it (storage cleared, Safari backgrounding a page):
+      // the next spool opens a new one.
+      opened.onclose = forget
+      resolve(opened)
+    }
+    req.onerror = () => {
+      gaveUp = true
+      reject(req.error)
+    }
+    req.onblocked = () => {
+      gaveUp = true
+      reject(new Error('syke: the spool database is blocked by another tab'))
+    }
   })
+  conn = { db, users: 0 }
+  db.catch(forget)
+  return conn
 }
 
 /** The page's connection to the spool database, shared by every spool on it. */
 export async function openDb(): Promise<IDBDatabase> {
-  users++
+  const conn = (connection ??= connect())
+  conn.users++
   try {
-    connection ??= new Promise<IDBDatabase>((resolve, reject) => {
-      if (typeof indexedDB === 'undefined') throw new Error('syke: this runtime has no IndexedDB')
-      const req = indexedDB.open(DB_NAME, 1)
-      // One store shared by every spool, keyed [spoolId, seq]: adding a store
-      // per spool would need a version change, which blocks other tabs.
-      req.onupgradeneeded = () => req.result.createObjectStore(STORE)
-      req.onsuccess = () => {
-        const db = req.result
-        // Let a newer schema (another tab) take over rather than block it.
-        db.onversionchange = () => {
-          db.close()
-          connection = null
-        }
-        resolve(db)
-      }
-      req.onerror = () => reject(req.error)
-      req.onblocked = () => reject(new Error('syke: the spool database is blocked by another tab'))
-    })
-    const pending = connection
-    pending.catch(() => {
-      if (connection === pending) connection = null
-    })
-    return await pending
+    return await conn.db
   } catch (error) {
-    users--
+    conn.users--
     throw error
   }
 }
 
-/** Releases a connection from `openDb()`; the last user closes it. */
+/** Releases a connection from `openDb()`; the last user of that connection closes it. */
 export function closeDb(db: IDBDatabase): void {
-  if (--users > 0) return
-  connection = null
+  const conn = connectionOf.get(db)
+  if (conn && --conn.users > 0) return
+  if (conn && connection === conn) connection = null
   db.close()
 }
 
@@ -76,7 +100,9 @@ function transact<T>(db: IDBDatabase, mode: IDBTransactionMode, fn: (store: IDBO
       return
     }
     tx.oncomplete = () => resolve(result)
-    tx.onerror = () => reject(tx.error)
+    // Not `onerror`: a failed request's error event reaches the transaction
+    // before it aborts, while `tx.error` is still null. Every failure that
+    // loses data aborts the transaction, with `tx.error` set by then.
     tx.onabort = () => reject(tx.error ?? new Error('syke: IndexedDB transaction aborted'))
   })
 }
@@ -180,15 +206,20 @@ export class IdbStore implements SpoolStore {
       count++
     }
     const range = IDBKeyRange.bound([this.#id, this.#head], [this.#id, this.#head + count - 1])
-    const records = await transact(this.#db, 'readwrite', (store) => {
-      const got = request(store.getAll(range, count))
+    // The request's result is read once the transaction commits; a failed
+    // request aborts the transaction, which rejects.
+    const got = await transact(this.#db, 'readwrite', (store) => {
+      const req = store.getAll(range, count)
       store.delete(range)
-      return got
+      return req
     })
+    const records = got.result
     if (records.length !== count) throw new Error('syke: spool records went missing from IndexedDB')
     this.#sizes.splice(0, count)
     this.#head += count
     this.#stored -= bytes
+    // Not given back to the quota budget: browsers reclaim deleted records
+    // lazily (Chrome on compaction), so the next estimate is the authority.
     return records as Uint8Array[]
   }
 

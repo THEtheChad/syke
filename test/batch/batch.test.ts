@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Batch as NodeBatch } from '../../src/node.ts'
 import { Batch as WebBatch } from '../../src/web.ts'
+import { BatchCore } from '../../src/batch/core.ts'
 import { pick, run, runSettled, runtimes } from '../harness.ts'
 import { drive } from '../streamDriver.ts'
 
@@ -109,6 +110,22 @@ describe.each(runtimes)('Batch (%s)', (runtime) => {
       expect(vi.getTimerCount()).toBe(0)
     })
 
+    it('waits out a maxWait longer than setTimeout can take', async () => {
+      const day = 24 * 60 * 60 * 1000
+      const stream = drive<number[]>(runtime, new Batch({ size: 5, maxWait: 60 * day }))
+      await stream.write(1)
+      // An unclamped timer would wrap around and fire after 1 ms.
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(stream.output).toEqual([])
+      await vi.advanceTimersByTimeAsync(60 * day - 1001)
+      expect(stream.output).toEqual([])
+      await vi.advanceTimersByTimeAsync(1)
+      expect(stream.output).toEqual([[1]])
+      expect(vi.getTimerCount()).toBe(0)
+      await stream.end()
+      await stream.done
+    })
+
     it('clears the timer when the stream is aborted', async () => {
       const stream = drive<number[]>(runtime, new Batch({ size: 5, maxWait: 100 }))
       await stream.write(1)
@@ -119,5 +136,28 @@ describe.each(runtimes)('Batch (%s)', (runtime) => {
       await vi.advanceTimersByTimeAsync(1000)
       expect(stream.output).toEqual([])
     })
+  })
+})
+
+describe('BatchCore', () => {
+  it('drops a partial batch when closed, rather than holding it', () => {
+    const pushed: number[][] = []
+    const sink = { push: (batch: number[]) => pushed.push(batch), end() {}, error() {}, full: false }
+    const core = new BatchCore<number>({ size: 10 })
+    core.start(sink)
+    core.transform(1)
+    core.transform(2)
+    core.close()
+    core.flush()
+    expect(pushed).toEqual([])
+  })
+})
+
+describe('Batch (node)', () => {
+  it('forwards only highWaterMark and signal to the Node stream', () => {
+    const batch = new NodeBatch({ size: 2, highWaterMark: 4, objectMode: false } as never)
+    expect(batch.writableObjectMode).toBe(true)
+    expect(batch.readableObjectMode).toBe(true)
+    expect(batch.writableHighWaterMark).toBe(4)
   })
 })

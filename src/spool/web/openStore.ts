@@ -23,7 +23,17 @@ export type SpoolStorageChoice = 'auto' | 'opfs' | 'indexeddb'
 export async function openStore(choice: SpoolStorageChoice, chunkSize: number, maxBytes: number): Promise<SpoolStore> {
   sweepOnce()
   const id = spoolId()
-  const release = await holdLock(id)
+  let release: () => void
+  try {
+    release = await holdLock(id)
+  } catch (error) {
+    // Without the lock the sweep could delete this spool's data: use no storage.
+    const reason = `Web Locks: ${describe(error)}`
+    if (choice !== 'auto') {
+      throw new SpoolStorageError(`syke: spool storage is unavailable (${reason})`, { cause: error })
+    }
+    return new NoStore(reason)
+  }
   const failures: string[] = []
 
   if (choice !== 'indexeddb') {

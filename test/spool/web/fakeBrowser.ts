@@ -1,5 +1,5 @@
 import { resolveObjectURL } from 'node:buffer'
-import { IDBFactory, IDBKeyRange } from 'fake-indexeddb'
+import { IDBFactory, IDBKeyRange, IDBObjectStore as FakeObjectStore } from 'fake-indexeddb'
 import { afterEach, vi } from 'vitest'
 
 /**
@@ -22,6 +22,12 @@ export interface FakeBrowserOptions {
   quota?: number
   /** Usage by other data, in bytes, on top of OPFS files. */
   usage?: number
+  /** The worker's `getDirectory()` throws `SecurityError`, as in some private windows. */
+  opfsSecurityError?: boolean
+  /** The worker's first N `getDirectory()` calls fail with a passing `UnknownError`. */
+  opfsGetDirectoryFailures?: number
+  /** `navigator.locks.request()` rejects with `SecurityError`, as in an opaque origin. */
+  locksSecurityError?: boolean
 }
 
 export interface FakeBrowser {
@@ -35,18 +41,61 @@ export interface FakeBrowser {
   idbRecords(): Promise<number>
   /** Calls to `navigator.storage.estimate()`. */
   estimates: number
+  /** Workers ever created. */
+  workersStarted: number
+  /**
+   * How many coming IndexedDB `put()`s fail, asynchronously (the request
+   * errors and the transaction aborts), with `idbPutError`.
+   */
+  idbPutFailures: number
+  /** The error name failing `put()`s get. Defaults to `QuotaExceededError`. */
+  idbPutError: string
+  /** Called as each IndexedDB `put()` is issued, while that write is in flight. */
+  onIdbPut: (() => void) | null
+  /** OPFS `truncate()` calls. */
+  truncates: number
+  /** Makes OPFS `truncate()` throw a `DOMException` with this name. */
+  truncateError: string | null
+  /**
+   * Worker replies to these ops (`'write'`, `'truncate'`, ...) are held,
+   * after the worker has run the request, until `releaseReplies()`.
+   */
+  holdReplies: Set<string>
+  /** Delivers the held replies, in order. */
+  releaseReplies(): void
+  /** How many replies are held. */
+  readonly heldReplies: number
+  /** How many coming `postMessage()` calls inside the worker throw `DataCloneError`. */
+  workerPostFailures: number
 }
 
 let current: FakeBrowser | null = null
+let heldReplies: (() => void)[] = []
 
 export function installFakeBrowser(options: FakeBrowserOptions = {}): FakeBrowser {
   const root = new FakeDirectory(options)
   const factory = new IDBFactory()
+  const held: (() => void)[] = []
+  heldReplies = held
   const browser: FakeBrowser = {
     root,
     options,
     workers: new Set(),
     estimates: 0,
+    workersStarted: 0,
+    idbPutFailures: 0,
+    idbPutError: 'QuotaExceededError',
+    onIdbPut: null,
+    truncates: 0,
+    truncateError: null,
+    workerPostFailures: 0,
+    holdReplies: new Set(),
+    releaseReplies: () => {
+      for (const deliver of held.splice(0)) deliver()
+    },
+    get heldReplies() {
+      return held.length
+    },
     opfsFiles: () => [...root.files.keys()],
     idbRecords: () => countRecords(factory),
   }
@@ -66,7 +115,43 @@ export function installFakeBrowser(options: FakeBrowserOptions = {}): FakeBrowse
       },
     },
   })
+  if (options.locksSecurityError) {
+    Object.defineProperty(navigator, 'locks', {
+      configurable: true,
+      value: {
+        request: async () => {
+          throw new DOMException('the origin is opaque', 'SecurityError')
+        },
+        query: async () => {
+          throw new DOMException('the origin is opaque', 'SecurityError')
+        },
+      },
+    })
+  }
   return browser
+}
+
+// Makes IndexedDB writes fail on demand the way a full disk does: the request
+// fails later, its error event reaches the transaction (whose `error` is
+// still null then), and the transaction aborts with that error.
+type RawStore = { storeRecord: (...args: unknown[]) => unknown }
+const originalPut = FakeObjectStore.prototype.put
+FakeObjectStore.prototype.put = function (this: IDBObjectStore & { _rawObjectStore: RawStore }, ...args) {
+  const browser = current
+  browser?.onIdbPut?.()
+  if (!browser || browser.idbPutFailures <= 0) return originalPut.apply(this, args)
+  browser.idbPutFailures--
+  const raw = this._rawObjectStore
+  const storeRecord = raw.storeRecord
+  const name = browser.idbPutError
+  raw.storeRecord = () => {
+    throw new DOMException('the write failed', name)
+  }
+  try {
+    return originalPut.apply(this, args)
+  } finally {
+    raw.storeRecord = storeRecord
+  }
 }
 
 /** Installs a fresh fake browser around each test and removes it after. */
@@ -76,6 +161,8 @@ export function useFakeBrowser(): void {
     current = null
     vi.unstubAllGlobals()
     delete (navigator as { storage?: unknown }).storage
+    // Only an own property (a stub); Node's own `navigator.locks` is on the prototype.
+    if (Object.hasOwn(navigator, 'locks')) delete (navigator as { locks?: unknown }).locks
   })
 }
 
@@ -216,6 +303,13 @@ export class FakeSyncAccessHandle {
     return this.#file.size
   }
 
+  truncate(size: number): void {
+    if (current) current.truncates++
+    if (current?.truncateError) throw new DOMException('the truncate failed', current.truncateError)
+    this.#file.size = Math.min(this.#file.size, size)
+    if (size === 0) this.#file.data = new Uint8Array(0)
+  }
+
   flush(): void {}
 
   close(): void {
@@ -227,6 +321,8 @@ export class FakeSyncAccessHandle {
 export class FakeWorker extends EventTarget {
   #handlers: ((event: { data: unknown }) => void) | null = null
   readonly #handles = new Set<FakeSyncAccessHandle>()
+  // The op of each request, by id, so replies to some ops can be held.
+  readonly #ops = new Map<number, string>()
   readonly #started: Promise<void>
   #terminated = false
 
@@ -234,6 +330,7 @@ export class FakeWorker extends EventTarget {
     super()
     const browser = current as FakeBrowser
     browser.workers.add(this)
+    browser.workersStarted++
     if (browser.options.workerBlocked) {
       this.#started = Promise.resolve()
       setTimeout(() => {
@@ -246,21 +343,37 @@ export class FakeWorker extends EventTarget {
       navigator: {
         storage: {
           // The worker's view of OPFS, so terminate() can close its handles.
-          getDirectory: async () => ({
+          getDirectory: async () => {
+            if (browser.options.opfsSecurityError) throw new DOMException('OPFS is off here', 'SecurityError')
+            if ((browser.options.opfsGetDirectoryFailures ?? 0) > 0) {
+              browser.options.opfsGetDirectoryFailures = (browser.options.opfsGetDirectoryFailures ?? 0) - 1
+              throw new DOMException('busy', 'UnknownError')
+            }
+            return {
             getFileHandle: (name: string, options?: { create?: boolean }) =>
               browser.root.getFileHandle(name, options, this.#handles),
             removeEntry: (name: string) => browser.root.removeEntry(name),
-          }),
+            }
+          },
         },
       },
       FileSystemFileHandle: browser.options.noSyncHandles ? class {} : FakeFileHandle,
       onmessage: null as ((event: { data: unknown }) => void) | null,
       postMessage: (data: unknown, transfer: Transferable[] = []) => {
         if (this.#terminated) return
+        if (browser.workerPostFailures > 0) {
+          browser.workerPostFailures--
+          throw new DOMException('could not clone the reply', 'DataCloneError')
+        }
         const copy = structuredClone(data, { transfer: transfer as never[] })
-        setTimeout(() => {
+        const id = (data as { id?: number }).id
+        const op = id === undefined ? undefined : this.#ops.get(id)
+        if (id !== undefined) this.#ops.delete(id)
+        const deliver = () => {
           if (!this.#terminated) this.dispatchEvent(new MessageEvent('message', { data: copy }))
-        })
+        }
+        if (op !== undefined && browser.holdReplies.has(op)) heldReplies.push(deliver)
+        else setTimeout(deliver)
       },
     }
     const blob = resolveObjectURL(url)
@@ -273,6 +386,8 @@ export class FakeWorker extends EventTarget {
 
   postMessage(data: unknown, transfer: Transferable[] = []): void {
     if (this.#terminated) return
+    const { id, op } = (data ?? {}) as { id?: unknown; op?: unknown }
+    if (typeof id === 'number' && typeof op === 'string') this.#ops.set(id, op)
     const copy = structuredClone(data, { transfer: transfer as never[] })
     void this.#started.then(() => {
       if (!this.#terminated) this.#handlers?.({ data: copy })

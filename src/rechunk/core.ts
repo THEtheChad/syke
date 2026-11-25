@@ -1,3 +1,4 @@
+import { assertUint8Array } from '../shared/bytes.ts'
 import type { Sink, Transformer } from '../shared/transformer.ts'
 import { positiveInt } from '../shared/validate.ts'
 
@@ -21,6 +22,7 @@ export class RechunkCore implements Transformer<Uint8Array, Uint8Array> {
   }
 
   transform(chunk: Uint8Array, sink: Sink<Uint8Array>): void {
+    assertUint8Array('Rechunk', chunk)
     const size = this.#size
     let offset = 0
     if (this.#pending) {

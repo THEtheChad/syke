@@ -5,6 +5,7 @@ import {
   type Puller,
   assertIterable,
   assertSource,
+  isAsyncIterable,
   iterablePuller,
 } from '../shared/combinator/core.ts'
 
@@ -27,7 +28,9 @@ export class MergeCore<S> implements Producer<unknown> {
   readonly #lanes = new Set<Puller<unknown>>()
   /** Lanes (and the feed) with a read in flight. */
   readonly #pending = new Set<Puller<unknown>>()
-  readonly #ready: Ready[] = []
+  /** Settled reads, taken from `#head` on (shift() would make draining quadratic). */
+  #ready: Ready[] = []
+  #head = 0
   /** An async iterable of sources still being read, if any. */
   #feed: Puller<S> | null = null
   #outlet: Outlet<unknown> | null = null
@@ -39,13 +42,21 @@ export class MergeCore<S> implements Producer<unknown> {
   constructor(sources: Iterable<S> | AsyncIterable<S>, open: Opener<S>) {
     assertIterable(sources, 'sources')
     this.#open = open
-    if (Symbol.asyncIterator in sources) {
+    if (isAsyncIterable<S>(sources)) {
       this.#feed = iterablePuller(sources)
     } else {
       // Check them all before opening any, so a bad one leaves the rest untouched.
       const list = [...sources]
       for (const source of list) assertSource(source)
-      for (const source of list) this.#add(source)
+      try {
+        for (const source of list) this.#add(source)
+      } catch (error) {
+        // A later source failed to open (the same ReadableStream twice, say):
+        // hand the earlier ones back untouched, as if we'd never seen them.
+        for (const lane of this.#lanes) lane.release()
+        this.#lanes.clear()
+        throw error
+      }
     }
   }
 
@@ -56,7 +67,7 @@ export class MergeCore<S> implements Producer<unknown> {
 
   async pull(): Promise<void> {
     while (!this.#finished) {
-      const item = this.#ready.shift()
+      const item = this.#take()
       if (item?.lane === null) {
         if (item.result.done) this.#feed = null
         else {
@@ -112,6 +123,18 @@ export class MergeCore<S> implements Producer<unknown> {
     )
   }
 
+  #take(): Ready | undefined {
+    if (this.#head === this.#ready.length) return undefined
+    const item = this.#ready[this.#head++]
+    if (this.#head === this.#ready.length) this.#clearReady()
+    return item
+  }
+
+  #clearReady() {
+    this.#ready = []
+    this.#head = 0
+  }
+
   #notify() {
     const wake = this.#wake
     this.#wake = null
@@ -131,7 +154,7 @@ export class MergeCore<S> implements Producer<unknown> {
     this.#lanes.clear()
     this.#feed?.cancel(reason)
     this.#feed = null
-    this.#ready.length = 0
+    this.#clearReady()
     this.#notify()
   }
 }

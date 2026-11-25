@@ -37,9 +37,75 @@ At least one is required.
 | `min` | Fewest bytes allowed. |
 | `max` | Most bytes allowed. |
 
+Each is a non-negative integer. One of 2^53 or more can't be reached, so it
+works as no limit; `Infinity`, a fraction or a negative number throws a
+`RangeError`.
+
 `syke/node` also takes `highWaterMark` and `signal`, passed to `stream.Transform`.
 
 `check.bytes` holds the number of bytes that have passed so far.
+
+## Chunk types
+
+`LengthCheck` only reads each chunk's `byteLength`, so it counts bytes in any
+form and passes every chunk on untouched:
+
+- **`syke/web`:** a `Uint8Array`, any other view (`DataView`, `Uint16Array`,
+  ...), an `ArrayBuffer` or a `SharedArrayBuffer`, including one from another
+  realm (an iframe, a `vm` context). A bare `SharedArrayBuffer` is only
+  recognised where this realm has a `SharedArrayBuffer` global (in browsers, a
+  cross-origin isolated page); views of one always are.
+- **`syke/node`:** the byte-mode stream turns views and strings (as UTF-8)
+  into `Buffer`s before `LengthCheck` sees them. Node rejects a bare
+  `ArrayBuffer` itself.
+
+Anything else fails the stream with a `TypeError` rather than being
+miscounted.
+
+### Types
+
+In `syke/web`, `LengthCheck<T extends ByteChunk = Uint8Array>` is a
+`TransformStream` whose writable side takes `T`. `ByteChunk`
+(`ArrayBufferLike | ArrayBufferView`) is exported from `syke/web`. Passed
+straight to `pipeThrough()`, `T` is inferred from the stream; built on its own
+first, it defaults to `Uint8Array` unless you name it.
+
+The readable side is typed by `LengthCheckOutput<T>`, also exported:
+
+- **Any `Uint8Array`** (`Uint8Array<ArrayBuffer>`, as `fetch()` types a body,
+  a subtype such as `Buffer`, or an untyped `any` stream) comes out as a plain
+  `Uint8Array`, as in 0.1.0. The output can be reassigned to, or mixed with,
+  any other `ReadableStream<Uint8Array>`.
+- **Other byte chunks** come out as they went in: an `ArrayBuffer`,
+  `SharedArrayBuffer`, `DataView`, `Uint16Array` or `ByteChunk` stream stays
+  one. In a union each member is mapped on its own, so
+  `Uint8Array<ArrayBuffer> | DataView` comes out as `Uint8Array | DataView`.
+
+```ts
+import { type ByteChunk, LengthCheck } from '@thethechad/syke/web'
+
+declare const res: Response
+const body = res.body!.pipeThrough(new LengthCheck({ expected: 1024 }))
+//    ^? ReadableStream<Uint8Array>
+
+declare const buffers: ReadableStream<ArrayBuffer>
+const checked = buffers.pipeThrough(new LengthCheck({ expected: 1024 }))
+//    ^? ReadableStream<ArrayBuffer>
+
+const check = new LengthCheck<DataView>({ max: 1024 })
+//    ^? LengthCheck<DataView>, a TransformStream<DataView, DataView>
+
+function checkAny(source: ReadableStream<ByteChunk>): ReadableStream<ByteChunk> {
+  return source.pipeThrough(new LengthCheck({ max: 1024 }))
+}
+```
+
+`LengthCheck` can be subclassed (`class MyCheck extends LengthCheck {}`, or
+`extends LengthCheck<ArrayBuffer>`), and a subclass can be used where a
+`typeof LengthCheck` is expected.
+
+The `syke/node` `LengthCheck` is a `stream.Transform`, so its chunks aren't
+typed.
 
 ## Errors
 

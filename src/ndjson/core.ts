@@ -1,4 +1,5 @@
 import { LineSplitter } from '../lines/core.ts'
+import type { ByteChunk } from '../shared/bytes.ts'
 import { SykeError } from '../shared/errors.ts'
 import type { Sink, Transformer } from '../shared/transformer.ts'
 
@@ -53,7 +54,7 @@ export class NdjsonStringifyError extends SykeError {
 /** Only JSON whitespace: a line of it is skipped rather than parsed. */
 const BLANK = /^[ \t\r]*$/
 
-export class NdjsonParseCore<T = unknown> implements Transformer<Uint8Array | string, T> {
+export class NdjsonParseCore<T = unknown> implements Transformer<ByteChunk | string, T> {
   readonly #splitter: LineSplitter
   readonly #reviver: JsonReviver | undefined
 
@@ -65,7 +66,7 @@ export class NdjsonParseCore<T = unknown> implements Transformer<Uint8Array | st
     this.#reviver = reviver
   }
 
-  transform(chunk: Uint8Array | string, sink: Sink<T>): void {
+  transform(chunk: ByteChunk | string, sink: Sink<T>): void {
     this.#splitter.write(chunk, (line, number) => this.#parse(line, number, sink))
   }
 

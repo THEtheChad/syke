@@ -1,6 +1,6 @@
-import { equalBytes, fromHex, toBase64, toHex } from '../shared/bytes.ts'
+import { assertUint8Array, equalBytes, fromHex, isUint8Array, toBase64, toHex } from '../shared/bytes.ts'
 import { SykeError } from '../shared/errors.ts'
-import type { Sink, Transformer } from '../shared/transformer.ts'
+import { type Sink, type Transformer, toFailure } from '../shared/transformer.ts'
 import { oneOf } from '../shared/validate.ts'
 
 /**
@@ -47,7 +47,18 @@ export class DigestCore implements Transformer<Uint8Array, Uint8Array> {
   #settled = false
 
   constructor({ hasher, expected, encoding }: DigestCoreOptions) {
-    this.#hasher = hasher
+    if (isPromise(hasher)) {
+      // The stream may fail or be destroyed before it ever awaits the hasher;
+      // its rejection then mustn't go unhandled. Awaiting it later still sees the error.
+      const ready = Promise.resolve(hasher)
+      ready.catch(() => {})
+      this.#hasher = ready
+    } else if (typeof hasher?.update !== 'function' || typeof hasher.digest !== 'function') {
+      throw new TypeError('syke: hasher must have update() and digest() methods, or be a promise of one')
+    } else this.#hasher = hasher
+    if (expected !== undefined && typeof expected !== 'string' && !isUint8Array(expected)) {
+      throw new TypeError(`syke: expected must be a string or a Uint8Array, got ${typeof expected}`)
+    }
     this.#expected = expected
     this.#encoding = oneOf('encoding', encoding ?? 'hex', ['hex', 'base64'])
     this.digest = new Promise<string>((resolve, reject) => {
@@ -59,23 +70,33 @@ export class DigestCore implements Transformer<Uint8Array, Uint8Array> {
   }
 
   transform(chunk: Uint8Array, sink: Sink<Uint8Array>): void | Promise<void> {
+    try {
+      assertUint8Array('Digest', chunk)
+    } catch (error) {
+      this.#fail(error)
+    }
     const hasher = this.#hasher
     if (isPromise(hasher)) {
       return hasher.then((ready) => {
         this.#hasher = ready
-        ready.update(chunk)
+        this.#update(ready, chunk)
         sink.push(chunk)
-      })
+      }, this.#fail)
     }
-    hasher.update(chunk)
+    this.#update(hasher, chunk)
     sink.push(chunk)
   }
 
   async flush(): Promise<void> {
-    const hasher = await this.#hasher
-    const raw = hasher.digest()
-    const bytes = typeof raw === 'string' ? fromHex(raw) : raw
-    const actual = this.#encoding === 'hex' ? toHex(bytes) : toBase64(bytes)
+    let actual: string
+    let bytes: Uint8Array
+    try {
+      const raw = (await this.#hasher).digest()
+      bytes = typeof raw === 'string' ? fromHex(raw) : raw
+      actual = this.#encoding === 'hex' ? toHex(bytes) : toBase64(bytes)
+    } catch (error) {
+      return this.#fail(error)
+    }
     const expected = this.#expected
     if (expected !== undefined) {
       const matches =
@@ -87,9 +108,7 @@ export class DigestCore implements Transformer<Uint8Array, Uint8Array> {
       if (!matches) {
         const shown =
           typeof expected === 'string' ? expected : this.#encoding === 'hex' ? toHex(expected) : toBase64(expected)
-        const error = new DigestError(shown, actual)
-        this.#settle(() => this.#reject(error))
-        throw error
+        return this.#fail(new DigestError(shown, actual))
       }
     }
     this.#settle(() => this.#resolve(actual))
@@ -97,6 +116,25 @@ export class DigestCore implements Transformer<Uint8Array, Uint8Array> {
 
   close(): void {
     this.#settle(() => this.#reject(new Error('syke: stream closed before its digest was computed')))
+  }
+
+  #update(hasher: Hasher, chunk: Uint8Array) {
+    try {
+      hasher.update(chunk)
+    } catch (error) {
+      this.#fail(error)
+    }
+  }
+
+  /**
+   * Rejects `digest` with the error that failed the stream (not a generic
+   * one), then throws it. A falsy error is wrapped first, so both see the
+   * same `Error`.
+   */
+  readonly #fail = (error: unknown): never => {
+    const failure = toFailure(error)
+    this.#settle(() => this.#reject(failure))
+    throw failure
   }
 
   #settle(settle: () => void) {

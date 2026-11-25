@@ -1,3 +1,4 @@
+import { type ByteChunk, describeChunk, isByteChunk, unshared } from '../shared/bytes.ts'
 import { SykeError } from '../shared/errors.ts'
 import type { Sink, Transformer } from '../shared/transformer.ts'
 
@@ -42,6 +43,8 @@ export class LineSplitter {
   #partsLength = 0
   /** Lines completed so far. */
   #line = 0
+  /** True until the first character arrives, which is dropped if it's a byte order mark. */
+  #atStart = true
 
   constructor({ encoding = 'utf-8', maxLineLength = DEFAULT_MAX_LINE_LENGTH }: LinesOptions) {
     if (!(maxLineLength === Number.POSITIVE_INFINITY || (Number.isInteger(maxLineLength) && maxLineLength > 0))) {
@@ -49,22 +52,32 @@ export class LineSplitter {
     }
     this.#maxLineLength = maxLineLength
     try {
-      this.#decoder = new TextDecoder(encoding)
+      // The BOM is stripped by hand (in `#text`), so a string chunk carrying one
+      // is treated like bytes carrying one, and only at the very start: a
+      // TextDecoder would strip one again after every flush.
+      this.#decoder = new TextDecoder(encoding, { ignoreBOM: true })
     } catch {
       throw new RangeError(`syke: unsupported encoding '${encoding}'`)
     }
   }
 
   /** Feeds a chunk: bytes in `encoding`, or text that's already decoded. */
-  write(chunk: Uint8Array | string, onLine: (line: string, number: number) => void): void {
+  write(chunk: ByteChunk | string, onLine: (line: string, number: number) => void): void {
+    let text: string
     // A string arriving mid-character ends that character (as U+FFFD) first.
-    const text = typeof chunk === 'string' ? this.#decoder.decode() + chunk : this.#decoder.decode(chunk, { stream: true })
-    this.#split(text, onLine)
+    if (typeof chunk === 'string') text = this.#decoder.decode() + chunk
+    else if (isByteChunk(chunk)) text = this.#decoder.decode(unshared(chunk), { stream: true })
+    else {
+      throw new TypeError(
+        `syke: expected byte chunks (an ArrayBuffer or a view of one) or strings, got ${describeChunk(chunk)}`,
+      )
+    }
+    this.#split(this.#text(text), onLine)
   }
 
   /** Ends the input, emitting a final line that had no newline. */
   end(onLine: (line: string, number: number) => void): void {
-    this.#split(this.#decoder.decode(), onLine)
+    this.#split(this.#text(this.#decoder.decode()), onLine)
     if (this.#partsLength > 0) {
       const line = stripCR(this.#take(''))
       this.#check(line.length)
@@ -76,6 +89,9 @@ export class LineSplitter {
     let start = 0
     let newline = text.indexOf('\n')
     while (newline !== -1) {
+      // Stripping a '\r' shortens a line by at most one: fail an overlong
+      // line before joining its pieces, then check the exact length.
+      this.#check(this.#partsLength + (newline - start) - 1)
       const line = stripCR(this.#take(text.slice(start, newline)))
       this.#check(line.length)
       onLine(line, ++this.#line)
@@ -89,6 +105,13 @@ export class LineSplitter {
       // A trailing '\r' may yet be stripped, so it doesn't count against the limit.
       this.#check(this.#partsLength - (rest.endsWith('\r') ? 1 : 0))
     }
+  }
+
+  /** Drops a byte order mark at the start of the stream. */
+  #text(text: string): string {
+    if (!this.#atStart || text === '') return text
+    this.#atStart = false
+    return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
   }
 
   /** Joins the unfinished line with `tail` and resets it. */
@@ -110,14 +133,14 @@ function stripCR(line: string): string {
   return line.endsWith('\r') ? line.slice(0, -1) : line
 }
 
-export class LinesCore implements Transformer<Uint8Array | string, string> {
+export class LinesCore implements Transformer<ByteChunk | string, string> {
   readonly #splitter: LineSplitter
 
   constructor(options: LinesOptions) {
     this.#splitter = new LineSplitter(options)
   }
 
-  transform(chunk: Uint8Array | string, sink: Sink<string>): void {
+  transform(chunk: ByteChunk | string, sink: Sink<string>): void {
     this.#splitter.write(chunk, (line) => sink.push(line))
   }
 

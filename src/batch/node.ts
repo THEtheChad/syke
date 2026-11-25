@@ -1,4 +1,4 @@
-import { CoreTransform, type NodeStreamOptions } from '../shared/node.ts'
+import { CoreTransform, type NodeStreamOptions, streamOptions } from '../shared/node.ts'
 import { BatchCore, type BatchOptions } from './core.ts'
 
 /**
@@ -9,7 +9,7 @@ import { BatchCore, type BatchOptions } from './core.ts'
  */
 export class Batch<T = unknown> extends CoreTransform<T, T[]> {
   constructor(options: BatchOptions & NodeStreamOptions) {
-    const { size, maxWait, ...streamOptions } = options ?? ({} as BatchOptions)
-    super(new BatchCore<T>({ size, maxWait }), { ...streamOptions, objectMode: true })
+    const { size, maxWait } = options ?? ({} as BatchOptions)
+    super(new BatchCore<T>({ size, maxWait }), { ...streamOptions(options), objectMode: true })
   }
 }

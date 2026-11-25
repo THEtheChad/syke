@@ -37,6 +37,12 @@ const blocks = res.body.pipeThrough(new Rechunk({ size: 64 * 1024 }))
 
 `syke/node` also takes `highWaterMark` and `signal`, passed to `stream.Transform`.
 
+Input chunks must be `Uint8Array`s (a Node `Buffer` is one). Anything else,
+an `ArrayBuffer`, `DataView` or other typed array included, fails the stream
+with a `TypeError`: `subarray()` on another typed array cuts in elements, not
+bytes. In `syke/node` the byte-mode stream already turns views into
+`Buffer`s.
+
 ## Copying
 
 `Rechunk` copies as little as it can:

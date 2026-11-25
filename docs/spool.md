@@ -19,7 +19,8 @@ Reach for it when:
 Memory stays bounded by the stream's high-water mark plus `chunkSize` (and
 `memoryThreshold`, if you set one), however far the consumer falls behind. Disk
 usage tracks the backlog, not the stream: space the consumer has already read is
-reused before the spool file grows. By default it also stops spooling before the
+reused before the spool file grows, and the file is truncated back to zero once
+the backlog drains. By default it also stops spooling before the
 disk drops below 10% free (see [Disk limits](#disk-limits)), and the file is
 removed even if the process exits mid-stream.
 
@@ -84,8 +85,9 @@ await res.body
 | `onLimit`               | `'backpressure'`            | What happens at a disk limit: `'backpressure'` pauses the source, `'error'` fails the stream.               |
 | `highWaterMark`, `readableHighWaterMark`, `writableHighWaterMark`, `signal` | Node defaults | Passed through to `stream.Duplex`. Aborting `signal` destroys the stream and removes the file. |
 
-By default the stream is byte-oriented: strings are written as UTF-8 buffers.
-Pass `objectMode: true` to carry records instead.
+By default the stream is byte-oriented: strings are written as UTF-8 buffers,
+and empty (0-byte) chunks are ignored. Pass `objectMode: true` to carry records
+instead.
 
 `spool.filepath` holds the spool file's path once the stream first spills to disk
 (it's `null` until then).
@@ -127,7 +129,8 @@ differently depending on whether it happened to spill.
   `undefined` and circular references. Class instances come back as plain
   objects, and functions and symbols can't be encoded at all.
 - **`jsonCodec`** is JSON over UTF-8. It's smaller for plain data, but Dates
-  come back as strings, and `undefined` and functions are lost.
+  come back as strings, nested `undefined`/function properties are dropped, and
+  top-level `undefined`, functions or symbols fail with `SpoolCodecError`.
 - Bring your own for compact or schema-based formats:
 
 ```js
@@ -186,12 +189,17 @@ gives the backlog room to drain.
 
 Two limits keep the spool file from filling the disk:
 
-- **`minFreeSpace`** (default `'10%'`) checks the filesystem's real free space
+- **`minFreeSpace`** (default `'10%'`) checks the filesystem's free space
   whenever the spool file is about to grow, and won't grow it past the floor.
-  Because it reads live free space, every stream (and every other process) shares
-  the same floor, so many parallel spools can't oversubscribe the disk. If free
-  space can't be read on a platform, the floor isn't enforced.
+  Readings are cached briefly (100 ms) per directory, with in-process growth
+  counted in between, so parallel spools share one floor rather than each
+  spending the same free space. The check isn't atomic: spools that read the
+  budget at the same moment can each grow their file by one more write, so the
+  floor can be overshot by about one write per spool: usually about `chunkSize`,
+  more when a single chunk written to the spool is larger. Other processes writing to the filesystem are only seen at the next
+  reading. If free space can't be read on a platform, the floor isn't enforced.
 - **`maxDiskBytes`** caps the size of one stream's spool file.
+- **`ENOSPC` / `EDQUOT`** from the OS is also treated as hitting a disk limit.
 
 At a limit, new data goes into any space the consumer has already read, so the
 source resumes as soon as the consumer frees some room rather than after the
@@ -216,7 +224,9 @@ new Spool({ maxDiskBytes: 2 * 1024 ** 3, minFreeSpace: '20%', onLimit: 'error' }
 On some Linux systems `/tmp` is a `tmpfs`, which lives in RAM, so spooling "to
 disk" there still uses memory. The first time a spool writes into a tmpfs or
 ramfs directory, it emits a process warning (`code: 'SYKE_SPOOL_TMPFS'`). Pass a
-`dir` on a real disk to fix it.
+`dir` on a real disk to fix it. The check is remembered for the 64 most recently
+used directories, so a process cycling through more than that may warn about a
+directory again.
 
 ## Cleanup on exit
 
@@ -251,7 +261,8 @@ that way are named `syke-spool-*` in the spool directory.
 - The file holds unread data as a short list of regions. Reads take from the
   oldest region; writes extend the newest one or start a new region in space the
   consumer has already read (at least `chunkSize` bytes of it), and the file only
-  grows when no such space exists.
+  grows when no such space exists. Once the backlog drains completely, the file
+  is truncated back to zero.
 - The file is closed and deleted when the stream ends, errors, is destroyed or
   the process exits.
 
@@ -280,8 +291,9 @@ storage, however far behind the consumer is, until a [limit](#limits) is
 reached.
 
 `Spool.from(source, options?)` reads a `ReadableStream` or an iterable or async
-iterable through a new spool and returns the spool. Errors and cancellation
-propagate both ways, as with `pipeTo()`.
+iterable through a new spool and returns the spool. An invalid or already-locked
+source throws synchronously. Errors and cancellation propagate both ways, as
+with `pipeTo()`.
 
 ### Options
 
@@ -300,8 +312,9 @@ propagate both ways, as with `pipeTo()`.
 
 The cap keeps Node's name, `maxDiskBytes`, so options can be shared between
 the two versions: OPFS files and IndexedDB records live on disk too, in the
-browser profile. To abort a spool, pass a `signal` to `pipeThrough()` or
-`pipeTo()`; there's no `signal` option.
+browser profile. In byte mode, empty (0-byte) chunks are ignored. To abort a
+spool, pass a `signal` to `pipeThrough()` or `pipeTo()`; there's no `signal`
+option.
 
 Properties:
 
@@ -321,8 +334,9 @@ With `storage: 'auto'` (the default), a spool tries, in order:
    1 GB/s for larger ones. syke can't ship a separate worker file, so the worker
    is created from a Blob URL holding its source (a string, so bundlers and
    minifiers leave it alone). One worker serves every spool on the page and is
-   terminated when the last one closes. Each spool gets one file, and space the
-   consumer has read is reused before the file grows, as in Node.
+   terminated when the last one closes. Each spool gets one file, space the
+   consumer has read is reused before the file grows, and the file is truncated
+   back to zero once the backlog drains, as in Node.
 2. **IndexedDB**, if the worker can't start (see [CSP](#content-security-policy))
    or the browser has no sync access handles. Records go in one shared database,
    `syke-spool`, keyed by spool and sequence number, in transactions of up to
@@ -336,8 +350,9 @@ With `storage: 'auto'` (the default), a spool tries, in order:
 
 `storage: 'opfs'` or `'indexeddb'` uses only that backend, and fails the stream
 with a `SpoolStorageError` (`code: 'ERR_SYKE_SPOOL_STORAGE'`) if it's
-unavailable. Storage is opened the first time a spool spills, so the error
-surfaces then.
+unavailable. Storage is opened the first time a spool spills, and if the source
+closes before that open settles, the stream waits for it so a missing backend
+still surfaces `SpoolStorageError`.
 
 ### Content Security Policy
 
@@ -356,27 +371,33 @@ Content-Security-Policy: worker-src 'self' blob:
   `navigator.storage.estimate()`, would drop below the floor. A percentage is
   of the quota, not the disk. Estimates are shared by every spool on the page
   and refreshed at most once a second, with each spool's growth counted in
-  between, so parallel spools can't all spend the same space. If the quota
-  can't be read, there's no floor.
+  between, so parallel spools can't all spend the same space. Space a spool
+  frees counts only once the browser has reclaimed it: an emptied OPFS file
+  once it's truncated, deleted IndexedDB records (which browsers reclaim
+  lazily) at the next estimate. If the quota can't be read, there's no floor.
 - **`maxDiskBytes`** caps how much one spool keeps in storage.
 - **The browser's quota** is always a hard limit: a write the browser refuses
-  (`QuotaExceededError`) is kept and treated like any other limit.
+  (`QuotaExceededError`) is kept and treated like any other limit (pausing new
+  growth for a second even when `minFreeSpace: false`, or failing with
+  `SpoolLimitError` under `onLimit: 'error'`).
 
 At a limit, `onLimit` applies as in Node. With `'backpressure'` the source is
 paused until the consumer frees space, and no data is dropped.
 
 Memory stays bounded however far the consumer falls behind: up to 1 MiB of
-writes waiting for storage, one 1 MiB write in flight, one read (`chunkSize`
-for OPFS, up to 1 MiB for IndexedDB), `memoryThreshold`, and one chunk in the
-readable side's queue.
+writes waiting for storage (up to 2 MiB if a refused write is held back), one
+1 MiB write in flight, one read (`chunkSize` for OPFS, up to 1 MiB for
+IndexedDB), `memoryThreshold`, one chunk in the readable side's queue, and in
+object mode the largest single record when one is bigger than `chunkSize`.
 
 ### Object mode in the browser
 
-With `objectMode: true` a spool carries any values. Records that pass straight
-through or are held under `memoryThreshold` stay the same objects; only records
-that are spilled are encoded, with `codec` (default `jsonCodec`, JSON over
-UTF-8, which turns `Date`s into strings and drops `undefined`, functions and
-class identity).
+With `objectMode: true` a spool carries any values (including `null`, unlike
+Node). Records that pass straight through or are held under `memoryThreshold`
+stay the same objects; only records that are spilled are encoded, with `codec`
+(default `jsonCodec`, JSON over UTF-8, which turns `Date`s into strings, drops
+nested `undefined`/function properties and class identity, and fails with
+`SpoolCodecError` on top-level `undefined`, functions or symbols).
 
 Records are encoded with the codec in IndexedDB too, rather than stored by
 structured clone, so a stream behaves the same whichever backend `'auto'`

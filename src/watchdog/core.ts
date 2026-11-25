@@ -1,5 +1,5 @@
 import { SykeError } from '../shared/errors.ts'
-import type { Sink, Transformer } from '../shared/transformer.ts'
+import { MAX_TIMEOUT_MS, type Sink, type Transformer } from '../shared/transformer.ts'
 import { positiveNumber } from '../shared/validate.ts'
 
 export interface WatchdogOptions {
@@ -70,9 +70,10 @@ export class WatchdogCore<T> implements Transformer<T, T> {
   }
 
   // One timer, re-armed only when it fires, so chunks don't each reset a timer.
+  // A delay past what setTimeout can take is capped: `#check` re-arms for the rest.
   #arm(ms: number) {
     clearTimeout(this.#timer)
-    this.#timer = this.#closed ? undefined : setTimeout(this.#check, ms)
+    this.#timer = this.#closed ? undefined : setTimeout(this.#check, Math.min(ms, MAX_TIMEOUT_MS))
   }
 
   #check = () => {

@@ -1,10 +1,11 @@
 // syke/web: utilities built on Web Streams, for browsers, Deno, Bun and Node.
 export { SykeError } from './shared/errors.ts'
+export type { ByteChunk } from './shared/bytes.ts'
 export type { Hasher, DigestEncoding } from './digest/core.ts'
 export { DigestError } from './digest/core.ts'
 export { Digest, type DigestOptions } from './digest/web.ts'
 export { LengthCheckError, type LengthCheckOptions } from './lengthCheck/core.ts'
-export { LengthCheck } from './lengthCheck/web.ts'
+export { LengthCheck, type LengthCheckConstructor, type LengthCheckOutput } from './lengthCheck/web.ts'
 export { LineTooLongError, type LinesOptions } from './lines/core.ts'
 export { Lines } from './lines/web.ts'
 export {
@@ -37,6 +38,13 @@ export type { ThrottleOptions } from './throttle/core.ts'
 export { Throttle } from './throttle/web.ts'
 export { SpoolLimitError, type MinFreeSpace } from './spool/core/limits.ts'
 export { type Codec, jsonCodec, SpoolCodecError } from './spool/core/records.ts'
-export { Spool, type SpoolOptions, type SpoolSource } from './spool/web/Spool.ts'
+export {
+  Spool,
+  type ByteSpoolOptions,
+  type ObjectSpoolOptions,
+  type SpoolBaseOptions,
+  type SpoolOptions,
+  type SpoolSource,
+} from './spool/web/Spool.ts'
 export type { SpoolStorageChoice } from './spool/web/openStore.ts'
 export { SpoolStorageError, type SpoolStorage } from './spool/web/store.ts'

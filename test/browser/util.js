@@ -52,13 +52,23 @@ export async function opfsSpoolFiles() {
 
 /** Records in the spool database, without creating it. */
 export async function idbRows() {
-  const databases = await indexedDB.databases()
-  if (!databases.some((database) => database.name === 'syke-spool')) return 0
+  if (typeof indexedDB.databases === 'function') {
+    const databases = await indexedDB.databases()
+    if (!databases.some((database) => database.name === 'syke-spool')) return 0
+  }
   const db = await new Promise((resolve, reject) => {
     const req = indexedDB.open('syke-spool')
+    let missing = false
+    // Without databases() (older browsers), opening is how to tell; abort
+    // the upgrade so a missing database isn't created (empty, it would break the spool).
+    req.onupgradeneeded = () => {
+      missing = true
+      req.transaction.abort()
+    }
     req.onsuccess = () => resolve(req.result)
-    req.onerror = () => reject(req.error)
+    req.onerror = () => (missing ? resolve(null) : reject(req.error))
   })
+  if (!db) return 0
   try {
     if (!db.objectStoreNames.contains('chunks')) return 0
     return await new Promise((resolve, reject) => {
@@ -98,13 +108,21 @@ export function frame(src) {
   const el = document.createElement('iframe')
   el.hidden = true
   el.src = src
+  let onMessage
   const message = new Promise((resolve) => {
-    addEventListener('message', function onMessage(event) {
+    onMessage = (event) => {
       if (event.source !== el.contentWindow) return
       removeEventListener('message', onMessage)
       resolve(event.data)
-    })
+    }
+    addEventListener('message', onMessage)
   })
   document.body.append(el)
-  return { message, remove: () => el.remove() }
+  return {
+    message,
+    remove: () => {
+      removeEventListener('message', onMessage)
+      el.remove()
+    },
+  }
 }

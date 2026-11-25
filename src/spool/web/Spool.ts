@@ -5,7 +5,7 @@ import { openStore, type SpoolStorageChoice } from './openStore.ts'
 import { isQuotaError, storageBudget, storageFull, storageGrew } from './quota.ts'
 import { NoStore, type SpoolStorage, type SpoolStore } from './store.ts'
 
-export interface SpoolOptions<T = Uint8Array> {
+export interface SpoolBaseOptions {
   /**
    * Largest chunk, in bytes, read back from storage at once (and, in byte
    * mode, pushed downstream). Defaults to 64 KiB.
@@ -38,10 +38,30 @@ export interface SpoolOptions<T = Uint8Array> {
    * with a `SpoolStorageError` if that backend is unavailable.
    */
   storage?: SpoolStorageChoice
+}
+
+/**
+ * Options for a byte or object-mode spool. `ByteSpoolOptions` and
+ * `ObjectSpoolOptions` are stricter, for when the mode is known up front.
+ */
+export interface SpoolOptions<T = Uint8Array> extends SpoolBaseOptions {
   /** Carry arbitrary values instead of bytes. They're encoded with `codec` only when spilled. */
   objectMode?: boolean
   /** Turns records into bytes for storage, in object mode. Defaults to `jsonCodec`. */
   codec?: Codec<T>
+}
+
+/** Options for a byte spool: no `objectMode`, so no `codec`. */
+export interface ByteSpoolOptions extends SpoolOptions<Uint8Array> {
+  /** Carry bytes (the default). */
+  objectMode?: false
+  codec?: undefined
+}
+
+/** Options for an object-mode spool, carrying records of type `T`. */
+export interface ObjectSpoolOptions<T = unknown> extends SpoolOptions<T> {
+  /** Carry arbitrary values instead of bytes. They're encoded with `codec` only when spilled. */
+  objectMode: true
 }
 
 /** Anything `Spool.from()` can read from. */
@@ -54,8 +74,13 @@ export type SpoolSource<T = Uint8Array> = ReadableStream<T> | Iterable<T> | Asyn
  */
 const BATCH_BYTES = 1024 * 1024
 const DEFAULT_CHUNK_SIZE = 64 * 1024
+/** Most a chunk read back may pin of its buffer, as a multiple of its own size, before it's copied. */
+const PIN_RATIO = 16
 /** How often to recheck the storage quota while waiting on `minFreeSpace`. */
 const FREE_SPACE_POLL_MS = 250
+
+/** Settled outcome of one storage write: a refusal is never mistaken for success, whatever was thrown. */
+type WriteResult = { ok: true; grew: number } | { ok: false; error: unknown }
 
 // Deletes the storage of a spool that was garbage-collected without ending.
 const abandoned =
@@ -72,7 +97,7 @@ const abandoned =
  * IndexedDB as a fallback) and read back, `chunkSize` bytes at a time, as the
  * consumer drains. Use it with `pipeThrough()`.
  */
-export class Spool<T = Uint8Array> {
+export class Spool<T = Uint8Array> implements ReadableWritablePair<T, T> {
   readonly readable: ReadableStream<T>
   readonly writable: WritableStream<T>
   /**
@@ -99,11 +124,12 @@ export class Spool<T = Uint8Array> {
   #storeOpening: Promise<SpoolStore> | null = null
   readonly #pending = new Set<Promise<unknown>>()
 
-  // Data in stream order: #memory (oldest), #out (read back from storage),
+  // Data in stream order: #memory (oldest), #out (read back from storage:
+  // chunks, or in object mode record payloads decoded as they're delivered),
   // storage, the write in flight, then #batch (newest).
-  #memory: T[] = []
+  readonly #memory = new Queue<T>()
   #memorySize = 0
-  #out: T[] = []
+  readonly #out = new Queue<Uint8Array>()
   readonly #batch = new Batch()
 
   #wantsData = false
@@ -124,15 +150,28 @@ export class Spool<T = Uint8Array> {
    * Accepts a `ReadableStream` or an iterable or async iterable of chunks.
    * Errors and cancellation propagate both ways, as with `pipeTo`.
    */
-  static from<T = Uint8Array>(source: SpoolSource<T>, options?: SpoolOptions<T>): Spool<T> {
+  static from<T extends Uint8Array = Uint8Array>(source: SpoolSource<T>, options?: ByteSpoolOptions): Spool<T>
+  /** Reads records from `source`: `Spool.from(records, { objectMode: true })`. */
+  static from<T>(source: SpoolSource<T>, options: ObjectSpoolOptions<T>): Spool<T>
+  /** Reads bytes or records from `source`, as `options.objectMode` says. */
+  static from<T = Uint8Array>(source: SpoolSource<T>, options: SpoolOptions<T> | undefined): Spool<T>
+  static from<T>(source: SpoolSource<T>, options?: SpoolOptions<T>): Spool<T> {
+    const readable = toReadableStream(source)
+    // pipeTo() would reject without touching the spool, leaving it open forever.
+    if (readable.locked) throw new TypeError('syke: Spool.from() source stream is locked (already being read)')
     const spool = new Spool<T>(options)
-    // Errors surface on spool.readable; this only stops an unhandled rejection.
-    toReadableStream(source)
-      .pipeTo(spool.writable)
-      .catch(() => {})
+    // A failed source or a cancelled spool already reached the spool through
+    // the pipe (then #fail is a no-op); anything else must not leave it hanging.
+    readable.pipeTo(spool.writable).catch((error: unknown) => spool.#fail(error))
     return spool
   }
 
+  /** A byte spool. */
+  constructor(options?: ByteSpoolOptions)
+  /** An object-mode spool, carrying records of type `T`. */
+  constructor(options: ObjectSpoolOptions<T>)
+  /** A byte or object-mode spool, as `options.objectMode` says. */
+  constructor(options?: SpoolOptions<T>)
   constructor(options: SpoolOptions<T> = {}) {
     const { chunkSize, memoryThreshold, minFreeSpace, maxDiskBytes, onLimit, storage, objectMode, codec } = options
     this.#chunkSize = positiveInt('chunkSize', chunkSize ?? DEFAULT_CHUNK_SIZE)
@@ -206,8 +245,13 @@ export class Spool<T = Uint8Array> {
   }
 
   async #write(chunk: T): Promise<void> {
-    if (!this.#codec && !isUint8Array(chunk)) {
-      throw new TypeError(`syke: Spool chunks must be Uint8Array (or use objectMode), got ${describe(chunk)}`)
+    if (!this.#codec) {
+      if (!isUint8Array(chunk)) {
+        throw new TypeError(`syke: Spool chunks must be Uint8Array (or use objectMode), got ${describe(chunk)}`)
+      }
+      // Empty chunks carry nothing, and would cost no memory budget: queued,
+      // they could grow #memory without bound.
+      if (chunk.byteLength === 0) return
     }
 
     // The consumer is waiting and nothing is queued ahead: hand it straight over.
@@ -235,15 +279,19 @@ export class Spool<T = Uint8Array> {
     this.#pump()
   }
 
-  /** Something is queued in storage, in flight or in the batch. */
+  /**
+   * Something is queued in storage, in flight or in the batch: a new chunk
+   * must queue behind it rather than overtake it through memory. (Part of a
+   * record waiting in the decoder implies this: the rest of its frame is
+   * still spilled, since `#write()` appends a whole frame before the next.)
+   */
   #spilled(): boolean {
     return (
       !this.#batch.empty ||
       this.#writing ||
       this.#reading ||
       this.#out.length > 0 ||
-      !(this.#store?.empty ?? true) ||
-      (this.#decoder?.pendingBytes ?? 0) > 0
+      !(this.#store?.empty ?? true)
     )
   }
 
@@ -255,6 +303,8 @@ export class Spool<T = Uint8Array> {
         this.#writerRunning = false
         // Data may have arrived after the loop's last check.
         if (!this.#batch.empty) this.#startWriter()
+        // The end of the stream may have been waiting on the writer.
+        else this.#pump()
       },
       (error: unknown) => {
         this.#writerRunning = false
@@ -276,7 +326,10 @@ export class Spool<T = Uint8Array> {
         this.#pump()
         if (this.#batch.empty) return
         if (this.#onLimit === 'error') throw new SpoolLimitError(this.#limitMessage(store, budget))
-        await this.#waitForSpace(store)
+        // Only the free-space floor can lift without the consumer reading
+        // (other pages free storage): at maxDiskBytes, or with no storage,
+        // reading is the only way, and it wakes the writer.
+        await this.#waitForSpace(!(store instanceof NoStore) && !store.wouldReachMax(budget))
         continue
       }
 
@@ -284,25 +337,36 @@ export class Spool<T = Uint8Array> {
       this.#writing = true
       this.#notifyBatchSpace()
       const result = await store.write(bytes).then(
-        (grew) => ({ grew, error: null }),
-        (error: unknown) => ({ grew: 0, error }),
+        (grew): WriteResult => ({ ok: true, grew }),
+        (error: unknown): WriteResult => ({ ok: false, error }),
       )
       this.#writing = false
       if (this.#done) return
 
-      if (result.error !== null) {
-        const returned = (result.error as { bytes?: unknown }).bytes
+      if (!result.ok) {
+        const { error } = result
+        const returned = (error as { bytes?: unknown } | null)?.bytes
         const intact = returned instanceof Uint8Array ? returned : bytes
-        if (!isQuotaError(result.error) || intact.byteLength !== room) throw result.error
+        if (!isQuotaError(error) || intact.byteLength !== room) {
+          throw error ?? new Error('syke: spool storage write failed')
+        }
         // The browser's quota is a hard limit, whatever minFreeSpace says.
         this.#batch.unshift(intact)
         storageFull()
         if (this.#onLimit === 'error') {
           throw new SpoolLimitError('syke: the browser refused to store more (storage quota exceeded)', {
-            cause: result.error,
+            cause: error,
           })
         }
-        await this.#waitForSpace(store)
+        // A read that arrived during the write waited for it to land (it was
+        // older than the batch): hand it the batch now. Left waiting, only the
+        // poll timer could resume it, and that holds the spool only weakly, so
+        // a source and consumer both blocked on the spool could be collected
+        // with it mid-stream.
+        this.#pump()
+        if (this.#batch.empty) continue
+        // Another page may free storage, so poll as well as wait for the reader.
+        await this.#waitForSpace(true)
         continue
       }
 
@@ -344,17 +408,24 @@ export class Spool<T = Uint8Array> {
     return "syke: spilling more would take the origin's free storage below minFreeSpace"
   }
 
-  /** Resolves when the reader frees space, the consumer asks for data, or the quota may have changed. */
-  #waitForSpace(store: SpoolStore) {
+  /**
+   * Resolves when the reader frees space, the consumer asks for data, or
+   * (with `poll`) the quota may have changed.
+   */
+  #waitForSpace(poll: boolean) {
     return new Promise<void>((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | undefined
       const wake = () => {
         clearTimeout(timer)
-        this.#wakeWriter = null
+        if (this.#wakeWriter === wake) this.#wakeWriter = null
         resolve()
       }
-      // With no storage only the consumer can make room; otherwise poll the quota.
-      const timer = store instanceof NoStore ? undefined : setTimeout(wake, FREE_SPACE_POLL_MS)
       this.#wakeWriter = wake
+      // The timer holds `wake` (and through it this spool) only weakly, so a
+      // spool dropped while paused is still collected, and its storage freed.
+      // That is only safe because callers #pump() first: a read still waiting
+      // then has storage I/O in flight, which keeps the spool alive.
+      if (poll) timer = setTimeout(weakly(wake), FREE_SPACE_POLL_MS)
     })
   }
 
@@ -402,7 +473,9 @@ export class Spool<T = Uint8Array> {
         continue
       }
       if (this.#out.length > 0) {
-        this.#deliver(this.#out.shift() as T)
+        const piece = this.#out.shift() as Uint8Array
+        // Records are decoded one at a time, as delivered; a codec error fails the stream.
+        this.#deliver(this.#codec ? (decodeRecord(this.#codec, piece) as T) : (piece as T))
         continue
       }
       if (this.#reading) return
@@ -422,6 +495,9 @@ export class Spool<T = Uint8Array> {
     }
 
     if (this.#writeEnded && this.#memory.length === 0 && !this.#spilled()) {
+      // Storage named outright may still fail to open: wait for that rather
+      // than end cleanly and lose the SpoolStorageError.
+      if (this.#writerRunning && this.#storageChoice !== 'auto') return
       if ((this.#decoder?.pendingBytes ?? 0) > 0) throw new Error('syke: spool ended mid-record')
       this.#done = true
       this.#readableController.close()
@@ -440,11 +516,16 @@ export class Spool<T = Uint8Array> {
   /** Queues bytes read back from storage (or the batch) for delivery. */
   #feed(bytes: Uint8Array) {
     if (this.#codec) {
-      for (const payload of (this.#decoder as FrameDecoder).push(bytes)) this.#out.push(decodeRecord(this.#codec, payload) as T)
+      for (const payload of (this.#decoder as FrameDecoder).push(bytes)) this.#out.push(payload)
       return
     }
     for (let offset = 0; offset < bytes.byteLength; offset += this.#chunkSize) {
-      this.#out.push(bytes.subarray(offset, offset + this.#chunkSize) as T)
+      const piece = bytes.subarray(offset, offset + this.#chunkSize)
+      // A chunk much smaller than its buffer (a short batch in a large one, a
+      // small chunkSize of a 1 MiB IndexedDB record) gets its own copy, so a
+      // consumer keeping it keeps at most PIN_RATIO times its size. Default
+      // 64 KiB chunks of a 1 MiB record share it.
+      this.#out.push(piece.byteLength * PIN_RATIO < piece.buffer.byteLength ? piece.slice() : piece)
     }
   }
 
@@ -486,9 +567,9 @@ export class Spool<T = Uint8Array> {
     this.#pullDone = null
     pullDone?.()
     this.#wakeWriter?.()
-    this.#memory = []
+    this.#memory.clear()
     this.#memorySize = 0
-    this.#out = []
+    this.#out.clear()
     this.#batch.clear()
     this.#settleClosed(this.#cleanup())
   }
@@ -508,6 +589,44 @@ export class Spool<T = Uint8Array> {
     promise.then(untrack, untrack)
     return promise
   }
+}
+
+/** A FIFO with O(1) `shift()`: an array read from a moving head, compacted as it drains. */
+class Queue<T> {
+  #items: T[] = []
+  #head = 0
+
+  get length(): number {
+    return this.#items.length - this.#head
+  }
+
+  push(item: T): void {
+    this.#items.push(item)
+  }
+
+  shift(): T | undefined {
+    if (this.#head >= this.#items.length) return undefined
+    const item = this.#items[this.#head] as T
+    this.#items[this.#head++] = undefined as T
+    if (this.#head === this.#items.length) this.clear()
+    else if (this.#head >= 1024 && this.#head * 2 >= this.#items.length) {
+      this.#items = this.#items.slice(this.#head)
+      this.#head = 0
+    }
+    return item
+  }
+
+  clear(): void {
+    this.#items = []
+    this.#head = 0
+  }
+}
+
+/** Calls `fn` while something else still holds it: a timer then doesn't keep its owner alive. */
+function weakly(fn: () => void): () => void {
+  if (typeof WeakRef !== 'function') return fn
+  const ref = new WeakRef(fn)
+  return () => ref.deref()?.()
 }
 
 /**
@@ -592,11 +711,17 @@ function describe(value: unknown): string {
 }
 
 function toReadableStream<T>(source: SpoolSource<T>): ReadableStream<T> {
-  if (typeof (source as ReadableStream<T>).pipeTo === 'function') return source as ReadableStream<T>
-  const iterator =
-    Symbol.asyncIterator in (source as object)
-      ? (source as AsyncIterable<T>)[Symbol.asyncIterator]()
-      : (source as Iterable<T>)[Symbol.iterator]()
+  if (typeof (source as ReadableStream<T> | null)?.pipeTo === 'function') return source as ReadableStream<T>
+  let iterator: Iterator<T> | AsyncIterator<T>
+  if (typeof (source as AsyncIterable<T> | null)?.[Symbol.asyncIterator] === 'function') {
+    iterator = (source as AsyncIterable<T>)[Symbol.asyncIterator]()
+  } else if (typeof (source as Iterable<T> | null)?.[Symbol.iterator] === 'function') {
+    iterator = (source as Iterable<T>)[Symbol.iterator]()
+  } else {
+    throw new TypeError(
+      `syke: Spool.from() needs a ReadableStream, an iterable or an async iterable, got ${describe(source)}`,
+    )
+  }
   return new ReadableStream<T>(
     {
       async pull(controller) {
@@ -604,8 +729,8 @@ function toReadableStream<T>(source: SpoolSource<T>): ReadableStream<T> {
         if (done) controller.close()
         else controller.enqueue(value)
       },
-      async cancel(reason) {
-        await iterator.return?.(reason)
+      async cancel() {
+        await iterator.return?.()
       },
     },
     { highWaterMark: 0 },

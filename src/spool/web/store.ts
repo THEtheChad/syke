@@ -80,13 +80,24 @@ export function spoolId(): string {
 }
 
 function locks(): LockManager | undefined {
-  return globalThis.navigator?.locks
+  try {
+    return globalThis.navigator?.locks
+  } catch {
+    return undefined
+  }
+}
+
+/** Opaque origins (sandboxed iframes, `data:` URLs) refuse Web Locks, as they refuse storage. */
+function isSecurityError(error: unknown): boolean {
+  return (error as { name?: unknown } | null)?.name === 'SecurityError'
 }
 
 /**
  * Holds the spool's Web Lock until the returned function is called. The
  * browser releases it if the page goes away, which is how the sweep tells an
- * abandoned spool from a live one. Without Web Locks there's nothing to hold.
+ * abandoned spool from a live one. Without Web Locks, or where the origin
+ * may not use them (an opaque origin, which can't share storage with another
+ * page's sweep either), there's nothing to hold.
  */
 export async function holdLock(id: string): Promise<() => void> {
   const manager = locks()
@@ -102,7 +113,12 @@ export async function holdLock(id: string): Promise<() => void> {
       })
       .catch(reject)
   })
-  await held
+  try {
+    await held
+  } catch (error) {
+    if (isSecurityError(error)) return () => {}
+    throw error
+  }
   let released = false
   return () => {
     if (released) return

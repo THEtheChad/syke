@@ -45,8 +45,13 @@ export class ParallelMapCore<I, O> implements Transformer<I, O> {
   readonly #abort = new AbortController()
   /** Calls in flight, plus (in order) finished results waiting for an earlier one. */
   #active = 0
-  /** In order: one entry per active slot, oldest first. */
-  readonly #queue: Task<O>[] = []
+  /**
+   * In order: one entry per active slot, oldest first, from `#head` on. Taking
+   * from the head moves an index rather than shifting the array, so a high
+   * `concurrency` costs O(1) per result, not O(concurrency).
+   */
+  #queue: (Task<O> | undefined)[] = []
+  #head = 0
   #waiter: Waiter | undefined
   #failed = false
   #error: unknown
@@ -88,6 +93,8 @@ export class ParallelMapCore<I, O> implements Transformer<I, O> {
     const waiter = this.#waiter
     this.#waiter = undefined
     waiter?.resolve()
+    // Don't hold on to results nobody will receive.
+    this.#clearQueue()
   }
 
   #launch(item: I) {
@@ -115,8 +122,8 @@ export class ParallelMapCore<I, O> implements Transformer<I, O> {
       task.settled = true
       task.value = value
       // Emit every finished result at the head of the line.
-      while (this.#queue[0]?.settled) {
-        const head = this.#queue.shift() as Task<O>
+      for (let head = this.#queue[this.#head]; head?.settled; head = this.#queue[this.#head]) {
+        this.#take()
         this.#active--
         this.#emit(head.value)
       }
@@ -128,6 +135,22 @@ export class ParallelMapCore<I, O> implements Transformer<I, O> {
     }
   }
 
+  /** Drops the task at the head of the queue. */
+  #take() {
+    this.#queue[this.#head++] = undefined
+    if (this.#head === this.#queue.length) this.#clearQueue()
+    // Compact now and then, so the dead prefix stays at most half the array.
+    else if (this.#head >= 1024 && this.#head * 2 >= this.#queue.length) {
+      this.#queue = this.#queue.slice(this.#head)
+      this.#head = 0
+    }
+  }
+
+  #clearQueue() {
+    this.#queue = []
+    this.#head = 0
+  }
+
   #emit(value: O | null | undefined) {
     if (value !== null && value !== undefined) this.#sink.push(value)
   }
@@ -136,7 +159,7 @@ export class ParallelMapCore<I, O> implements Transformer<I, O> {
     if (this.#failed || this.#closed) return
     this.#failed = true
     this.#error = error
-    this.#queue.length = 0
+    this.#clearQueue()
     this.#abort.abort(error)
     // Fail through the waiting transform or flush if there is one, else directly.
     const waiter = this.#waiter

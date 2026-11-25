@@ -14,10 +14,11 @@
  *   { op: 'open', name }                       creates the file, takes a sync handle
  *   { op: 'write', name, at, buffer, offset, length }   writes; `buffer` is transferred
  *   { op: 'read', name, at, length }           replies `{ buffer, length }`, transferred
+ *   { op: 'truncate', name, size }             truncates the file (once it's all read)
  *   { op: 'close', name }                      closes the handle and deletes the file
  *
  * On start it posts `{ ready: boolean }`: whether sync access handles exist.
- * Requests run one at a time, in order.
+ * Requests run one at a time, in order; one failing never stops the next.
  */
 export const OPFS_WORKER_SOURCE: string = `'use strict';
 var handles = new Map();
@@ -37,7 +38,16 @@ function supported() {
 }
 
 function root() {
-  if (!rootPromise) rootPromise = self.navigator.storage.getDirectory();
+  if (!rootPromise) {
+    var pending = Promise.resolve().then(function () {
+      return self.navigator.storage.getDirectory();
+    });
+    rootPromise = pending;
+    // A failure may be passing (the browser was busy): let the next request retry.
+    pending.catch(function () {
+      if (rootPromise === pending) rootPromise = null;
+    });
+  }
   return rootPromise;
 }
 
@@ -78,39 +88,66 @@ async function run(message) {
     }
     return [{ buffer: out.buffer, length: got }, [out.buffer]];
   }
+  if (message.op === 'truncate') {
+    handleFor(name).truncate(message.size);
+    return [undefined, []];
+  }
   if (message.op === 'close') {
     var open = handles.get(name);
     handles.delete(name);
-    if (open) await open.close();
-    var parent = await root();
     try {
-      await parent.removeEntry(name);
-    } catch (error) {
-      if (!error || error.name !== 'NotFoundError') throw error;
+      if (open) await open.close();
+    } finally {
+      var parent = await root();
+      try {
+        await parent.removeEntry(name);
+      } catch (error) {
+        if (!error || error.name !== 'NotFoundError') throw error;
+      }
     }
     return [undefined, []];
   }
   throw new Error('unknown op ' + message.op);
 }
 
+function describeError(error) {
+  return { name: (error && error.name) || 'Error', message: String((error && error.message) || error) };
+}
+
+function reply(message, result) {
+  try {
+    self.postMessage({ id: message.id, value: result[0] }, result[1]);
+  } catch (error) {
+    // The reply couldn't be sent (e.g. cloning failed): report that instead.
+    self.postMessage({ id: message.id, error: describeError(error) });
+  }
+}
+
+function replyError(message, error) {
+  // A failed write hands its bytes back, so a write refused for quota can be retried.
+  var back = message.op === 'write' && message.buffer && message.buffer.byteLength ? message.buffer : undefined;
+  try {
+    self.postMessage({ id: message.id, value: back, error: describeError(error) }, back ? [back] : []);
+  } catch (ignored) {
+    self.postMessage({ id: message.id, error: describeError(error) });
+  }
+}
+
 self.onmessage = function (event) {
   var message = event.data;
-  queue = queue.then(function () {
-    return run(message).then(
-      function (result) {
-        self.postMessage({ id: message.id, value: result[0] }, result[1]);
-      },
-      function (error) {
-        // A failed write hands its bytes back, so a write refused for quota can be retried.
-        var back = message.op === 'write' && message.buffer && message.buffer.byteLength ? message.buffer : undefined;
-        self.postMessage({
-          id: message.id,
-          value: back,
-          error: { name: (error && error.name) || 'Error', message: String((error && error.message) || error) },
-        }, back ? [back] : []);
-      }
-    );
-  });
+  queue = queue
+    .then(function () {
+      return run(message).then(
+        function (result) {
+          reply(message, result);
+        },
+        function (error) {
+          replyError(message, error);
+        }
+      );
+    })
+    // Never let one request poison the queue for every spool on the page.
+    .catch(function () {});
 };
 
 self.postMessage({ ready: supported() });

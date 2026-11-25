@@ -1,3 +1,4 @@
+import { type ByteChunk, byteLengthOf } from '../shared/bytes.ts'
 import { SykeError } from '../shared/errors.ts'
 import type { Sink, Transformer } from '../shared/transformer.ts'
 import { nonNegativeInt } from '../shared/validate.ts'
@@ -24,7 +25,7 @@ export class LengthCheckError extends SykeError {
   }
 }
 
-export class LengthCheckCore implements Transformer<Uint8Array, Uint8Array> {
+export class LengthCheckCore<T extends ByteChunk = Uint8Array> implements Transformer<T, T> {
   bytes = 0
   readonly #expected: number | undefined
   readonly #min: number
@@ -35,18 +36,19 @@ export class LengthCheckCore implements Transformer<Uint8Array, Uint8Array> {
       throw new TypeError('syke: LengthCheck needs at least one of expected, min or max')
     }
     this.#expected = expected === undefined ? undefined : nonNegativeInt('expected', expected)
-    this.#min = Math.max(min === undefined ? 0 : nonNegativeInt('min', min), expected ?? 0)
+    this.#min = Math.max(min === undefined ? 0 : nonNegativeInt('min', min), this.#expected ?? 0)
     this.#max = Math.min(
       max === undefined ? Number.POSITIVE_INFINITY : nonNegativeInt('max', max),
-      expected ?? Number.POSITIVE_INFINITY,
+      this.#expected ?? Number.POSITIVE_INFINITY,
     )
     if (this.#min > this.#max) {
       throw new RangeError(`syke: LengthCheck allows no length (min ${this.#min} > max ${this.#max})`)
     }
   }
 
-  transform(chunk: Uint8Array, sink: Sink<Uint8Array>): void {
-    this.bytes += chunk.byteLength
+  transform(chunk: T, sink: Sink<T>): void {
+    // Any ArrayBuffer or view counts: only its byteLength is read.
+    this.bytes += byteLengthOf('LengthCheck', chunk)
     // Fail before passing on the chunk that overruns, so it never reaches the consumer.
     if (this.bytes > this.#max) {
       throw new LengthCheckError(`syke: stream is longer than ${this.#describe()}`, this.bytes)

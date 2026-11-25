@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import * as zlib from 'node:zlib'
-import { CoreTransform, type NodeStreamOptions } from '../shared/node.ts'
+import { CoreTransform, type NodeStreamOptions, streamOptions } from '../shared/node.ts'
 import { DigestCore, type DigestEncoding, type Hasher } from './core.ts'
 import { Crc32 } from './crc32.ts'
 
@@ -35,15 +35,19 @@ export class Digest extends CoreTransform<Uint8Array, Uint8Array> {
   readonly digest: Promise<string>
 
   constructor(options: DigestOptions) {
-    const { algorithm, hasher, expected, encoding, ...streamOptions } = options
+    const { algorithm, hasher, expected, encoding } = options
+    if (algorithm !== undefined && hasher !== undefined) {
+      throw new TypeError('syke: Digest takes an algorithm or a hasher, not both')
+    }
     const core = new DigestCore({ hasher: hasher ?? nodeHasher(algorithm), expected, encoding })
-    super(core, streamOptions)
+    super(core, streamOptions(options))
     this.digest = core.digest
   }
 }
 
 function nodeHasher(algorithm: string | undefined): Hasher {
   if (algorithm === undefined) throw new TypeError('syke: Digest needs an algorithm or a hasher')
+  if (typeof algorithm !== 'string') throw new TypeError(`syke: algorithm must be a string, got ${typeof algorithm}`)
   if (algorithm.toLowerCase() === 'crc32') return new Crc32(nativeCrc32)
   return createHash(algorithm)
 }

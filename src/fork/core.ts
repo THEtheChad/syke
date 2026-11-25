@@ -19,6 +19,13 @@ export class ForkCore<T> {
   readonly #branches: Branch<T>[]
   #reading = false
   #finished = false
+  /**
+   * A failure that came before some branch's output stream was made.
+   * Deliberate defence: `fork()` starts every branch synchronously and
+   * `onError` always fires later, so the public API can't get here, but the
+   * `Producer` contract doesn't promise `start()` comes first.
+   */
+  #error: { reason: unknown } | null = null
 
   constructor(open: (onError: OnError) => Puller<T>, count: number) {
     this.#branches = Array.from({ length: count }, () => ({ outlet: null, live: true, waiting: null }))
@@ -30,20 +37,21 @@ export class ForkCore<T> {
     return {
       start: (outlet) => {
         branch.outlet = outlet
+        if (this.#error && branch.live) outlet.error(this.#error.reason)
       },
       pull: () =>
         new Promise<void>((resolve) => {
           branch.waiting = resolve
           this.#maybeRead()
         }),
-      cancel: () => {
+      cancel: (reason) => {
         branch.live = false
         this.#release(branch)
         if (this.#branches.some((other) => other.live)) this.#maybeRead()
         else if (!this.#finished) {
           // Every branch is gone: nobody wants the source any more.
           this.#finished = true
-          this.#source.cancel()
+          this.#source.cancel(reason)
         }
       },
     }
@@ -56,15 +64,22 @@ export class ForkCore<T> {
     this.#reading = true
     this.#source.next().then(
       (result) => {
-        this.#reading = false
-        if (this.#finished) return
-        if (result.done) this.#finished = true
-        for (const branch of this.#branches) {
-          if (!branch.live) continue
-          if (result.done) branch.outlet?.end()
-          else branch.outlet?.push(result.value)
-          this.#release(branch)
+        // Still `#reading` while handing the chunk out: a branch that cancels
+        // as it gets it (a Node branch given null does) mustn't start the next
+        // read while the branches after it still hold this one.
+        try {
+          if (this.#finished) return
+          if (result.done) this.#finished = true
+          for (const branch of this.#branches) {
+            if (!branch.live) continue
+            if (result.done) branch.outlet?.end()
+            else branch.outlet?.push(result.value)
+            this.#release(branch)
+          }
+        } finally {
+          this.#reading = false
         }
+        this.#maybeRead()
       },
       (error) => this.#fail(error),
     )
@@ -73,8 +88,10 @@ export class ForkCore<T> {
   #fail(error: unknown) {
     if (this.#finished) return
     this.#finished = true
+    this.#error = { reason: error }
     for (const branch of this.#branches) {
       if (!branch.live) continue
+      // A branch not started yet gets the error in start().
       branch.outlet?.error(error)
       this.#release(branch)
     }

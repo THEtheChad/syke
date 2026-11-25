@@ -1,4 +1,4 @@
-import { CoreTransform, type NodeStreamOptions } from '../shared/node.ts'
+import { CoreTransform, type NodeStreamOptions, streamOptions } from '../shared/node.ts'
 import {
   NdjsonParseCore,
   type NdjsonParseOptions,
@@ -13,9 +13,9 @@ import {
  */
 export class NdjsonParse<T = unknown> extends CoreTransform<Uint8Array | string, T> {
   constructor(options: NdjsonParseOptions & NodeStreamOptions = {}) {
-    const { maxLineLength, reviver, ...streamOptions } = options
+    const { maxLineLength, reviver } = options
     super(new NdjsonParseCore<T>({ maxLineLength, reviver }), {
-      ...streamOptions,
+      ...streamOptions(options),
       readableObjectMode: true,
       decodeStrings: false,
     })
@@ -29,7 +29,7 @@ export class NdjsonParse<T = unknown> extends CoreTransform<Uint8Array | string,
  */
 export class NdjsonStringify<T = unknown> extends CoreTransform<T, Uint8Array> {
   constructor(options: NdjsonStringifyOptions & NodeStreamOptions = {}) {
-    const { replacer, ...streamOptions } = options
-    super(new NdjsonStringifyCore({ replacer }), { ...streamOptions, writableObjectMode: true })
+    const { replacer } = options
+    super(new NdjsonStringifyCore({ replacer }), { ...streamOptions(options), writableObjectMode: true })
   }
 }

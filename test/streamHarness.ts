@@ -1,4 +1,4 @@
-import { Readable } from 'node:stream'
+import { Duplex, Readable } from 'node:stream'
 import type { Runtime } from './harness.ts'
 
 /**
@@ -186,4 +186,127 @@ export function generator(chunk: (i: number) => unknown = (i) => i): AsyncIterab
     },
   }
   return state
+}
+
+/**
+ * One source of every kind (Node readable, web stream, generator, async
+ * generator, array), to check a combinator that throws leaves them as it
+ * found them. `state()` reads them all, so call it once, at the end.
+ */
+export function bystanders(): { sources: unknown[]; state(): Promise<typeof untouched> } {
+  const node = Readable.from(['n1', 'n2'])
+  const nodeErrorListeners = node.listenerCount('error')
+  let webCancelled = false
+  const web = new ReadableStream({
+    start(controller) {
+      controller.enqueue('w1')
+      controller.close()
+    },
+    cancel() {
+      webCancelled = true
+    },
+  })
+  const sync = (function* () {
+    yield 's1'
+    yield 's2'
+  })()
+  const async = (async function* () {
+    yield 'a1'
+    yield 'a2'
+  })()
+  const array = ['r1']
+  return {
+    sources: [node, web, sync, async, array] as unknown[],
+    async state() {
+      const touched = {
+        nodeDestroyed: node.destroyed,
+        nodeErrorListeners: node.listenerCount('error') - nodeErrorListeners,
+        webLocked: web.locked,
+        webCancelled,
+      }
+      const read = async (iterable: AsyncIterable<unknown>) => {
+        const out: unknown[] = []
+        for await (const chunk of iterable) out.push(chunk)
+        return out
+      }
+      return {
+        ...touched,
+        node: await read(node),
+        web: web.locked ? ['(locked)'] : await collect(web),
+        sync: [...sync],
+        async: await read(async),
+        array,
+      }
+    },
+  }
+}
+
+/** What `bystanders().state()` returns when nothing touched them. */
+export const untouched: {
+  nodeDestroyed: boolean
+  nodeErrorListeners: number
+  webLocked: boolean
+  webCancelled: boolean
+  node: unknown[]
+  web: unknown[]
+  sync: unknown[]
+  async: unknown[]
+  array: unknown[]
+} = {
+  nodeDestroyed: false,
+  nodeErrorListeners: 0,
+  webLocked: false,
+  webCancelled: false,
+  node: ['n1', 'n2'],
+  web: ['w1'],
+  sync: ['s1', 's2'],
+  async: ['a1', 'a2'],
+  array: ['r1'],
+}
+
+/**
+ * A Node source that outlives the end of its readable side: a half-open
+ * `Duplex` (its writable side stays open) or a `Readable` that doesn't
+ * destroy itself once it ends. It emits `bytes`, then ends.
+ */
+export interface EndedSource {
+  stream: Readable
+  /** Not destroyed, and (for the `Duplex`) still writable. */
+  alive(): boolean
+}
+
+export type EndedSourceKind = 'half-open Duplex' | 'Readable with autoDestroy: false'
+export const endedSourceKinds: EndedSourceKind[] = ['half-open Duplex', 'Readable with autoDestroy: false']
+
+/**
+ * Whether reading this kind of source to its end leaves it open on this Node.
+ * Some Node releases (22 and 26, as of writing) have a stream async iterator
+ * that destroys a half-open `Duplex` itself once it reaches the end, before a
+ * combinator could stop it; others (24) keep it open.
+ */
+export const staysOpenAtEnd: Record<EndedSourceKind, boolean> = {
+  'half-open Duplex': await iteratingToTheEndLeavesOpen('half-open Duplex'),
+  'Readable with autoDestroy: false': await iteratingToTheEndLeavesOpen('Readable with autoDestroy: false'),
+}
+
+async function iteratingToTheEndLeavesOpen(kind: EndedSourceKind): Promise<boolean> {
+  const source = endedSource(kind)
+  source.stream.on('error', () => {})
+  for await (const _ of source.stream);
+  const open = source.alive()
+  source.stream.destroy()
+  return open
+}
+
+export function endedSource(kind: EndedSourceKind, bytes: Uint8Array = Uint8Array.of(1, 2)): EndedSource {
+  function read(this: Readable) {
+    this.push(bytes)
+    this.push(null)
+  }
+  if (kind === 'half-open Duplex') {
+    const stream = new Duplex({ allowHalfOpen: true, read, write: (_chunk, _encoding, done) => done() })
+    return { stream, alive: () => !stream.destroyed && stream.writable }
+  }
+  const stream = new Readable({ autoDestroy: false, read })
+  return { stream, alive: () => !stream.destroyed }
 }

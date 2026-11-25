@@ -14,7 +14,13 @@ const decoder = new TextDecoder()
 
 /** JSON over UTF-8. Runtime-neutral; loses what JSON can't express (Dates become strings, etc.). */
 export const jsonCodec: Codec = {
-  encode: (value) => encoder.encode(JSON.stringify(value)),
+  encode: (value) => {
+    const json = JSON.stringify(value)
+    // `undefined`, functions and symbols have no JSON form: fail now, on write,
+    // rather than writing zero bytes that can't be parsed back.
+    if (json === undefined) throw new TypeError(`syke: jsonCodec cannot encode ${typeof value}`)
+    return encoder.encode(json)
+  },
   decode: (bytes) => JSON.parse(decoder.decode(bytes)),
 }
 
@@ -22,23 +28,51 @@ export const jsonCodec: Codec = {
 export const FRAME_HEADER_BYTES = 4
 const MAX_FRAME = 0xffff_ffff
 
+function checkFrameSize(byteLength: number): void {
+  if (byteLength > MAX_FRAME) {
+    throw new RangeError(`syke: record is ${byteLength} bytes encoded; the limit is ${MAX_FRAME}`)
+  }
+}
+
+/**
+ * Writes `payload`, prefixed with its length, into `target` at `offset` and
+ * returns the offset just past it. `target` needs `FRAME_HEADER_BYTES +
+ * payload.byteLength` bytes free there. Lets callers frame many records into
+ * one buffer.
+ */
+export function writeFrame(target: Uint8Array, offset: number, payload: Uint8Array): number {
+  const length = payload.byteLength
+  checkFrameSize(length)
+  target[offset] = length >>> 24
+  target[offset + 1] = (length >>> 16) & 0xff
+  target[offset + 2] = (length >>> 8) & 0xff
+  target[offset + 3] = length & 0xff
+  target.set(payload, offset + FRAME_HEADER_BYTES)
+  return offset + FRAME_HEADER_BYTES + length
+}
+
 /** Prefixes `payload` with its length, so frames can be split back apart. */
 export function encodeFrame(payload: Uint8Array): Uint8Array {
-  if (payload.byteLength > MAX_FRAME) {
-    throw new RangeError(`syke: record is ${payload.byteLength} bytes encoded; the limit is ${MAX_FRAME}`)
-  }
+  checkFrameSize(payload.byteLength)
   const frame = new Uint8Array(FRAME_HEADER_BYTES + payload.byteLength)
-  new DataView(frame.buffer).setUint32(0, payload.byteLength)
-  frame.set(payload, FRAME_HEADER_BYTES)
+  writeFrame(frame, 0, payload)
   return frame
 }
+
+/**
+ * A pending piece smaller than this share of the buffer it views is copied
+ * out, so a small remainder doesn't keep a large read buffer alive.
+ */
+const COMPACT_RATIO = 4
 
 /**
  * Reassembles frames from bytes read back in arbitrary pieces (a frame may
  * span several reads, and a read may hold several frames).
  */
 export class FrameDecoder {
+  // Pieces from `#head` on are pending, oldest first.
   #pending: Uint8Array[] = []
+  #head = 0
   #pendingBytes = 0
 
   /** Bytes held toward an incomplete frame. */
@@ -54,56 +88,103 @@ export class FrameDecoder {
     }
     const frames: Uint8Array[] = []
     while (this.#pendingBytes >= FRAME_HEADER_BYTES) {
-      const header = this.#peek(FRAME_HEADER_BYTES)
-      const length = new DataView(header.buffer, header.byteOffset, FRAME_HEADER_BYTES).getUint32(0)
+      const length = this.#peekUint32()
       if (this.#pendingBytes < FRAME_HEADER_BYTES + length) break
-      this.#take(FRAME_HEADER_BYTES)
+      this.#skip(FRAME_HEADER_BYTES)
       frames.push(this.#take(length))
     }
+    this.#compact()
     return frames
   }
 
-  /** The first `n` pending bytes, without consuming them. */
-  #peek(n: number): Uint8Array {
-    const first = this.#pending[0] as Uint8Array
-    if (first.byteLength >= n) return first.subarray(0, n)
-    return this.#copy(n, false)
+  /** The big-endian uint32 at the start of the pending bytes, without consuming it. */
+  #peekUint32(): number {
+    const first = this.#pending[this.#head] as Uint8Array
+    if (first.byteLength >= FRAME_HEADER_BYTES) {
+      // `>>> 0` keeps lengths of 2 GiB and up positive.
+      return (((first[0] as number) << 24) | ((first[1] as number) << 16) | ((first[2] as number) << 8) | (first[3] as number)) >>> 0
+    }
+    let value = 0
+    let read = 0
+    for (let index = this.#head; read < FRAME_HEADER_BYTES; index++) {
+      const piece = this.#pending[index] as Uint8Array
+      for (let i = 0; i < piece.byteLength && read < FRAME_HEADER_BYTES; i++, read++) {
+        value = value * 256 + (piece[i] as number)
+      }
+    }
+    return value
+  }
+
+  /** Drops the first `n` pending bytes. */
+  #skip(n: number): void {
+    let left = n
+    while (left > 0) {
+      const piece = this.#pending[this.#head] as Uint8Array
+      if (piece.byteLength <= left) {
+        left -= piece.byteLength
+        this.#shift()
+      } else {
+        this.#pending[this.#head] = piece.subarray(left)
+        left = 0
+      }
+    }
+    this.#pendingBytes -= n
   }
 
   /** Removes and returns the first `n` pending bytes. */
   #take(n: number): Uint8Array {
-    const first = this.#pending[0]
-    if (first && first.byteLength >= n) {
+    if (n === 0) return new Uint8Array(0)
+    const first = this.#pending[this.#head] as Uint8Array
+    if (first.byteLength >= n) {
       // Fast path: no copy when the bytes sit in one piece.
       const out = first.subarray(0, n)
-      if (first.byteLength === n) this.#pending.shift()
-      else this.#pending[0] = first.subarray(n)
+      if (first.byteLength === n) this.#shift()
+      else this.#pending[this.#head] = first.subarray(n)
       this.#pendingBytes -= n
       return out
     }
-    return this.#copy(n, true)
-  }
-
-  #copy(n: number, consume: boolean): Uint8Array {
     const out = new Uint8Array(n)
     let filled = 0
-    let index = 0
     while (filled < n) {
-      const piece = this.#pending[index] as Uint8Array
+      const piece = this.#pending[this.#head] as Uint8Array
       const used = Math.min(piece.byteLength, n - filled)
-      out.set(piece.subarray(0, used), filled)
+      out.set(used === piece.byteLength ? piece : piece.subarray(0, used), filled)
       filled += used
-      if (consume) {
-        if (used === piece.byteLength) this.#pending.shift()
-        else this.#pending[0] = piece.subarray(used)
-      } else {
-        index++
-      }
+      if (used === piece.byteLength) this.#shift()
+      else this.#pending[this.#head] = piece.subarray(used)
     }
-    if (consume) this.#pendingBytes -= n
+    this.#pendingBytes -= n
     return out
   }
+
+  #shift(): void {
+    this.#pending[this.#head] = EMPTY
+    this.#head++
+    if (this.#head === this.#pending.length) {
+      this.#pending = []
+      this.#head = 0
+    }
+  }
+
+  /** Drops consumed slots and copies small remainders out of large buffers. */
+  #compact(): void {
+    if (this.#head > 0) {
+      this.#pending = this.#pending.slice(this.#head)
+      this.#head = 0
+    }
+    for (let i = 0; i < this.#pending.length; i++) {
+      const piece = this.#pending[i] as Uint8Array
+      if (piece.byteLength * COMPACT_RATIO < piece.buffer.byteLength) {
+        // Not `slice()`: on a Node Buffer that's a view, not a copy.
+        const copy = new Uint8Array(piece.byteLength)
+        copy.set(piece)
+        this.#pending[i] = copy
+      }
+    }
+  }
 }
+
+const EMPTY = new Uint8Array(0)
 
 /**
  * A codec threw, or returned something unusable, while an object-mode spool
@@ -123,7 +204,7 @@ export function encodeRecord(codec: Codec, record: unknown): Uint8Array {
   } catch (cause) {
     throw new SpoolCodecError(`syke: codec failed to encode a record: ${messageOf(cause)}`, { cause })
   }
-  if (!(bytes instanceof Uint8Array)) {
+  if (!isUint8Array(bytes)) {
     throw new SpoolCodecError(`syke: codec.encode() must return a Uint8Array, got ${typeName(bytes)}`)
   }
   return bytes
@@ -136,6 +217,14 @@ export function decodeRecord(codec: Codec, bytes: Uint8Array): unknown {
   } catch (cause) {
     throw new SpoolCodecError(`syke: codec failed to decode a record: ${messageOf(cause)}`, { cause })
   }
+}
+
+/** A `Uint8Array` (or Node `Buffer`) from any realm. */
+function isUint8Array(value: unknown): value is Uint8Array {
+  return (
+    value instanceof Uint8Array ||
+    (ArrayBuffer.isView(value) && (value as { [Symbol.toStringTag]?: unknown })[Symbol.toStringTag] === 'Uint8Array')
+  )
 }
 
 function messageOf(error: unknown): string {

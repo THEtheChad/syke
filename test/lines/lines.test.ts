@@ -1,6 +1,9 @@
-import { describe, expect, it } from 'vitest'
+import { ReadableStream as NodeReadableStream } from 'node:stream/web'
+import { runInNewContext } from 'node:vm'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { LineSplitter } from '../../src/lines/core.ts'
 import { LineTooLongError, Lines as NodeLines } from '../../src/node.ts'
-import { LineTooLongError as WebLineTooLongError, Lines as WebLines } from '../../src/web.ts'
+import { NdjsonParse as WebNdjsonParse, LineTooLongError as WebLineTooLongError, Lines as WebLines } from '../../src/web.ts'
 import { chunk, pick, run, runSettled, runtimes } from '../harness.ts'
 
 const encode = (text: string) => new TextEncoder().encode(text)
@@ -82,14 +85,176 @@ describe.each(runtimes)('Lines (%s)', (runtime) => {
   })
 })
 
-describe('Lines (node)', () => {
+describe.each(runtimes)('Lines (%s) with text input', (runtime) => {
+  const Lines = pick(runtime, { node: NodeLines, web: WebLines })
+
   it('accepts strings', async () => {
-    expect(await run(new NodeLines(), ['ab', 'c\nd\r', '\n', 'é'])).toEqual(['abc', 'd', 'é'])
+    expect(await run(new Lines(), ['ab', 'c\nd\r', '\n', 'é'])).toEqual(['abc', 'd', 'é'])
   })
 
   it('ends a character split before a string chunk with U+FFFD', async () => {
     const euro = encode('€')
-    expect(await run(new NodeLines(), [euro.subarray(0, 2), 'x\n'])).toEqual(['�x'])
+    expect(await run(new Lines(), [euro.subarray(0, 2), 'x\n'])).toEqual(['�x'])
+  })
+
+  it('strips a byte order mark from a leading string, as from leading bytes', async () => {
+    expect(await run(new Lines(), ['\uFEFFa\nb'])).toEqual(['a', 'b'])
+    expect(await run(new Lines(), ['', '\uFEFFa\n'])).toEqual(['a'])
+  })
+
+  it('strips a byte order mark split across byte chunks', async () => {
+    expect(await run(new Lines(), [new Uint8Array([0xef]), new Uint8Array([0xbb, 0xbf, 0x61, 0x0a])])).toEqual(['a'])
+  })
+
+  it('strips a UTF-16 byte order mark', async () => {
+    const utf16 = new Uint8Array([0xff, 0xfe, 0x68, 0, 0x69, 0])
+    expect(await run(new Lines({ encoding: 'utf-16le' }), [utf16])).toEqual(['hi'])
+  })
+
+  it('keeps U+FEFF past the start of the stream, whatever the chunk type', async () => {
+    const bom = '\uFEFF'
+    expect(await run(new Lines(), [encode('a\n'), encode(`${bom}b\n`)])).toEqual(['a', `${bom}b`])
+    expect(await run(new Lines(), ['a\n', `${bom}b\n`])).toEqual(['a', `${bom}b`])
+    // A string chunk flushes the decoder; that mustn't make it strip a BOM again.
+    expect(await run(new Lines(), ['a\n', encode(`${bom}b\n`)])).toEqual(['a', `${bom}b`])
+  })
+
+  it('fails a line far past maxLineLength that completes in one chunk', async () => {
+    const { error } = await runSettled(new Lines({ maxLineLength: 4 }), ['ab', 'cd', `${'x'.repeat(1000)}\n`])
+    expect(error).toMatchObject({ code: 'ERR_SYKE_LINE_TOO_LONG', line: 1 })
+  })
+
+  it('lets a line of exactly maxLineLength end in \\r\\n split across chunks', async () => {
+    expect(await run(new Lines({ maxLineLength: 4 }), ['ab', 'cd\r', '\nef'])).toEqual(['abcd', 'ef'])
+    await expect(run(new Lines({ maxLineLength: 4 }), ['ab', 'cde\r', '\n'])).rejects.toThrow(LineTooLongError)
+  })
+})
+
+describe.each(runtimes)('Lines (%s) with other byte views', (runtime) => {
+  const Lines = pick(runtime, { node: NodeLines, web: WebLines })
+
+  // A byte-mode Node stream turns any view into a Buffer first; the web one decodes it as is.
+  it('decodes the bytes of a DataView or Uint16Array', async () => {
+    const bytes = encode('ab\ncd\n')
+    const input = [new DataView(bytes.buffer, 0, 3), new Uint16Array(bytes.slice(3, 5).buffer), bytes.subarray(5)]
+    expect(await run(new Lines(), input)).toEqual(['ab', 'cd'])
+  })
+})
+
+describe('Lines (web)', () => {
+  it('decodes ArrayBuffer and SharedArrayBuffer chunks, from any realm', async () => {
+    const shared = new SharedArrayBuffer(3)
+    new Uint8Array(shared).set(encode('cd\n'))
+    const foreign = runInNewContext('new Uint8Array([101, 102, 10]).buffer') as ArrayBuffer
+    expect(foreign instanceof ArrayBuffer).toBe(false)
+    expect(await run(new WebLines(), [encode('ab\n').buffer, shared, foreign])).toEqual(['ab', 'cd', 'ef'])
+  })
+
+  describe('with a TextDecoder that refuses shared memory, as browsers do', () => {
+    // Chrome, Edge and Firefox throw on a SharedArrayBuffer or a view of one; Node doesn't.
+    class BrowserTextDecoder extends TextDecoder {
+      override decode(input?: AllowSharedBufferSource, options?: TextDecodeOptions): string {
+        const buffer = input && ArrayBuffer.isView(input) ? input.buffer : input
+        if (Object.prototype.toString.call(buffer) === '[object SharedArrayBuffer]') {
+          throw new TypeError("Failed to execute 'decode' on 'TextDecoder': The provided ArrayBufferView value must not be shared.")
+        }
+        return super.decode(input, options)
+      }
+    }
+    beforeEach(() => {
+      vi.stubGlobal('TextDecoder', BrowserTextDecoder)
+    })
+    afterEach(() => {
+      vi.unstubAllGlobals()
+    })
+
+    const sharedBytes = (text: string) => {
+      const bytes = encode(text)
+      const shared = new SharedArrayBuffer(bytes.length + 2)
+      new Uint8Array(shared).set(bytes, 1)
+      return { shared, view: new Uint8Array(shared, 1, bytes.length) }
+    }
+
+    it('decodes SharedArrayBuffer chunks and views of one', async () => {
+      // 'é' is split across the last two chunks.
+      const { shared, view } = sharedBytes('ab\ncd\nhé\n')
+      const whole = new SharedArrayBuffer(3)
+      new Uint8Array(whole).set(encode('xy\n'))
+      const foreign = runInNewContext('new SharedArrayBuffer(3)') as SharedArrayBuffer
+      new Uint8Array(foreign).set(encode('zz\n'))
+      const input = [view.subarray(0, 3), new DataView(shared, 4, 3), view.subarray(6, 8), view.subarray(8), whole, foreign]
+      expect(await run(new WebLines(), input)).toEqual(['ab', 'cd', 'hé', 'xy', 'zz'])
+    })
+
+    it('decodes shared NDJSON bytes', async () => {
+      const { view } = sharedBytes('{"a":1}\n')
+      expect(await run(new WebNdjsonParse(), [view])).toEqual([{ a: 1 }])
+    })
+  })
+
+  it('types its input to accept a TextDecoderStream (lib.dom)', () => {
+    // Compile-time check: this only type-checks if the input side takes strings.
+    const pipe = (text: ReadableStream<string>) => text.pipeThrough(new WebLines())
+    expect(typeof pipe).toBe('function')
+  })
+
+  it("takes a TextDecoderStream's output", async () => {
+    const source = NodeReadableStream.from([encode('héllo\nwö'), encode('rld\n')])
+    const lines: unknown[] = []
+    const text = source.pipeThrough(new TextDecoderStream() as never) as NodeReadableStream<string>
+    for await (const line of text.pipeThrough(new WebLines() as never)) lines.push(line)
+    expect(lines).toEqual(['héllo', 'wörld'])
+  })
+
+  it.each([
+    ['a number', 42],
+    ['an object', { length: 1 }],
+    ['an object posing as an ArrayBuffer', { byteLength: 1, [Symbol.toStringTag]: 'ArrayBuffer' }],
+    ['null', null],
+  ])('fails with a TypeError on %s', async (_, bad) => {
+    const { error } = await runSettled(new WebLines(), [encode('a\n'), bad])
+    expect(error).toBeInstanceOf(TypeError)
+    expect(error.message).toMatch(/^syke: expected byte chunks \(an ArrayBuffer or a view of one\) or strings, got /)
+  })
+})
+
+describe('Lines (node)', () => {
+  it('forwards only highWaterMark and signal to the Node stream', () => {
+    const lines = new NodeLines({ highWaterMark: 5, objectMode: true, decodeStrings: true } as never)
+    expect(lines.writableObjectMode).toBe(false)
+    expect(lines.readableObjectMode).toBe(true)
+    expect(lines.writableHighWaterMark).toBe(5)
+    // Strings stay strings: decodeStrings: true would have re-encoded them as UTF-8 bytes.
+    expect((lines as unknown as { _writableState: { decodeStrings: boolean } })._writableState.decodeStrings).toBe(false)
+  })
+})
+
+describe('LineSplitter', () => {
+  // The error is the same either way; failing first spares building a string
+  // of the whole overlong line just to measure it.
+  it('fails an overlong line before joining its pieces', () => {
+    const splitter = new LineSplitter({ maxLineLength: 4 })
+    const noop = () => {}
+    splitter.write('abc', noop)
+    const join = vi.spyOn(Array.prototype, 'join')
+    let error: unknown
+    try {
+      splitter.write(`${'x'.repeat(1000)}\n`, noop)
+    } catch (e) {
+      error = e
+    }
+    const joins = join.mock.calls.length
+    join.mockRestore()
+    expect(error).toBeInstanceOf(LineTooLongError)
+    expect(joins).toBe(0)
+  })
+
+  it('still joins a line within the limit', () => {
+    const splitter = new LineSplitter({ maxLineLength: 4 })
+    const lines: string[] = []
+    splitter.write('ab', (line) => lines.push(line))
+    splitter.write('cd\r\n', (line) => lines.push(line))
+    expect(lines).toEqual(['abcd'])
   })
 })
 

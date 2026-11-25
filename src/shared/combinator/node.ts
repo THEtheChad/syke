@@ -50,16 +50,31 @@ export function mirror(source: unknown): OutputOptions {
 
 function readablePuller(stream: Readable, onError: OnError): Puller<unknown> {
   // Listening also stops an error before the first read crashing the process.
+  // It stays on through cancel(), so nothing destroy() leads to can crash it.
   stream.on('error', onError)
-  const iterator = stream[Symbol.asyncIterator]()
+  // Made on the first read, so release() leaves nothing of ours on the stream.
+  let iterator: AsyncIterator<unknown> | null = null
+  let released = false
   return {
     async next() {
+      iterator ??= stream[Symbol.asyncIterator]()
       const result = await iterator.next()
       return result.done ? { done: true, value: undefined } : { done: false, value: result.value }
     },
     cancel() {
-      // A pending next() rejects with a premature close, which the caller ignores.
-      if (!stream.destroyed) stream.destroy()
+      // A released stream is the caller's again. One whose readable side has
+      // ended has nothing left to stop, and may still be in use: a half-open
+      // Duplex's writable side, or a stream that doesn't destroy itself at
+      // the end (autoDestroy: false).
+      if (released || stream.destroyed || stream.readableEnded) return
+      // Never with the reason: an error would reach the stream's own 'error'
+      // listeners, and whatever else it's wired to. A pending next() rejects
+      // with a premature close, which the caller ignores.
+      stream.destroy()
+    },
+    release() {
+      released = true
+      stream.off('error', onError)
     },
   }
 }
@@ -87,7 +102,14 @@ export function toReadable<T>(producer: Producer<T>, options: OutputOptions): Re
 
   const outlet: Outlet<T> = {
     push(chunk) {
-      if (!finished) readable.push(chunk)
+      if (finished) return
+      if (chunk === null) {
+        // push(null) would end the output early, silently dropping the rest.
+        // Destroying (not outlet.error) also cancels the producer.
+        readable.destroy(nullChunkError())
+        return
+      }
+      readable.push(chunk)
     },
     end() {
       if (finished) return
@@ -97,7 +119,7 @@ export function toReadable<T>(producer: Producer<T>, options: OutputOptions): Re
     error(error) {
       if (finished) return
       finished = true
-      readable.destroy(error as Error)
+      readable.destroy(toError(error))
     },
   }
 
@@ -119,4 +141,20 @@ export function toReadable<T>(producer: Producer<T>, options: OutputOptions): Re
 
   producer.start(outlet)
   return readable
+}
+
+/** The error for a `null` chunk, with the `code` Node itself gives `write(null)`. */
+function nullChunkError(): TypeError {
+  const error = new TypeError('syke: a source produced null, which a Node stream cannot carry')
+  return Object.assign(error, { code: 'ERR_STREAM_NULL_VALUES' })
+}
+
+/**
+ * `destroy()` with a falsy error doesn't emit `'error'`, so the output would
+ * look like it closed early instead of failing. Wraps such a value in an
+ * `Error` (keeping it as `cause`); anything truthy passes through.
+ */
+function toError(error: unknown): Error {
+  if (error) return error as Error
+  return new Error(`syke: a source failed with ${String(error === '' ? '""' : error)}`, { cause: error })
 }

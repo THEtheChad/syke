@@ -1,3 +1,4 @@
+import { asUint8Array, byteLengthOf, type ByteChunk } from '../shared/bytes.ts'
 import { SykeError } from '../shared/errors.ts'
 import type { Sink, Transformer } from '../shared/transformer.ts'
 import { nonNegativeInt, oneOf } from '../shared/validate.ts'
@@ -69,10 +70,11 @@ export class CapCore<T> implements Transformer<T, T> {
       sink.push(chunk)
       return
     }
-    const bytes = chunk as Uint8Array
+    const size = byteLengthOf('Cap with maxBytes', chunk)
     const room = this.#limit - this.bytes
-    if (bytes.byteLength <= room) {
-      this.bytes += bytes.byteLength
+    if (size <= room) {
+      // Any ArrayBuffer or view that fits passes through untouched.
+      this.bytes += size
       this.items++
       sink.push(chunk)
       return
@@ -81,7 +83,8 @@ export class CapCore<T> implements Transformer<T, T> {
     if (this.#onLimit === 'truncate' && room > 0) {
       this.bytes += room
       this.items++
-      sink.push(bytes.subarray(0, room) as T)
+      // Cut in bytes, not elements: a chunk that isn't a Uint8Array gives a Uint8Array view of its first bytes.
+      sink.push(asUint8Array(chunk as ByteChunk).subarray(0, room) as T)
     }
     this.#overrun(sink)
   }

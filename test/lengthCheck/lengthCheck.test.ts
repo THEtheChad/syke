@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto'
+import { runInNewContext } from 'node:vm'
 import { describe, expect, it } from 'vitest'
 import { LengthCheck as NodeLengthCheck, LengthCheckError } from '../../src/node.ts'
 import { LengthCheckError as WebLengthCheckError, LengthCheck as WebLengthCheck } from '../../src/web.ts'
@@ -45,6 +46,105 @@ describe.each(runtimes)('LengthCheck (%s)', (runtime) => {
     expect(() => new LengthCheck({ max: 1.5 })).toThrow(RangeError)
     expect(() => new LengthCheck({ min: 10, max: 5 })).toThrow(/allows no length/)
     expect(() => new LengthCheck({ expected: 10, max: 5 })).toThrow(/allows no length/)
+    expect(() => new LengthCheck({ max: Number.POSITIVE_INFINITY })).toThrow(/max must be a non-negative integer/)
+    expect(() => new LengthCheck({ max: Number.NaN })).toThrow(RangeError)
+  })
+
+  it.each([Number.MAX_SAFE_INTEGER, 2 ** 53, 2 ** 60, Number.MAX_VALUE])('takes max: %d as unlimited', async (max) => {
+    const check = new LengthCheck({ max })
+    expect((await runBytes(check, chunk(data, 999))).equals(data)).toBe(true)
+    expect(check.bytes).toBe(data.length)
+  })
+
+  it('fails a short stream against a huge expected length', async () => {
+    const error = await run(new LengthCheck({ expected: 2 ** 60 }), [data]).catch((e) => e)
+    expect(error).toMatchObject({ code: 'ERR_SYKE_LENGTH', bytes: data.length })
+  })
+
+  // A byte-mode Node stream turns any view into a Buffer before LengthCheck sees it; the web one gets it as is.
+  it.each([
+    ['a DataView', new DataView(new ArrayBuffer(6), 1, 4), 4],
+    ['a Uint16Array', new Uint16Array(3), 6],
+    ['a Float64Array', new Float64Array(2), 16],
+  ])('counts the bytes of %s, not its elements', async (_, view, size) => {
+    const check = new LengthCheck({ expected: size + 2 })
+    const output = await run<ArrayBufferView>(check, [new Uint8Array(2), view])
+    expect(output.reduce((n, piece) => n + piece.byteLength, 0)).toBe(size + 2)
+    expect(check.bytes).toBe(size + 2)
+  })
+
+  it('accepts a Uint8Array from another realm', async () => {
+    const foreign = runInNewContext('new Uint8Array([1, 2, 3])') as Uint8Array
+    expect(foreign instanceof Uint8Array).toBe(false)
+    const check = new LengthCheck({ expected: 3 })
+    expect((await runBytes(check, [foreign])).length).toBe(3)
+  })
+})
+
+describe('LengthCheck (web)', () => {
+  it('counts ArrayBuffer and DataView chunks, passing them through untouched', async () => {
+    const input = [new ArrayBuffer(4), new DataView(new ArrayBuffer(4)), new Uint16Array(2), new SharedArrayBuffer(3)]
+    const check = new WebLengthCheck({ expected: 15 })
+    const output = await run(check, input)
+    expect(output).toHaveLength(input.length)
+    output.forEach((chunk, i) => expect(chunk).toBe(input[i]))
+    expect(check.bytes).toBe(15)
+  })
+
+  it('counts an ArrayBuffer from another realm', async () => {
+    const foreign = runInNewContext('new ArrayBuffer(5)') as ArrayBuffer
+    expect(foreign instanceof ArrayBuffer).toBe(false)
+    const check = new WebLengthCheck({ expected: 5 })
+    await run(check, [foreign])
+    expect(check.bytes).toBe(5)
+  })
+
+  it.each([
+    ['a string', 'abc', /got string$/],
+    ['a number', 42, /got number$/],
+    ['a plain object', { byteLength: 3 }, /got Object$/],
+    ['an object posing as an ArrayBuffer', { byteLength: 3, [Symbol.toStringTag]: 'ArrayBuffer' }, /got Object$/],
+  ])('fails with a TypeError on %s rather than miscounting', async (_, bad, message) => {
+    const check = new WebLengthCheck({ max: 100 })
+    const { error } = await runSettled(check, [new Uint8Array(2), bad])
+    expect(error).toBeInstanceOf(TypeError)
+    expect(error.message).toMatch(/^syke: LengthCheck takes byte chunks \(an ArrayBuffer or a view of one\), got /)
+    expect(error.message).toMatch(message)
+    expect(check.bytes).toBe(2)
+  })
+})
+
+describe('LengthCheck (node)', () => {
+  it('leaves a bare ArrayBuffer to Node, whose byte-mode streams reject it', async () => {
+    const check = new NodeLengthCheck({ max: 100 })
+    // Node 22 throws from write(); Node 24 and later fail the stream instead.
+    const error = await new Promise((resolve) => {
+      check.once('error', resolve)
+      try {
+        check.write(new ArrayBuffer(4))
+      } catch (thrown) {
+        resolve(thrown)
+      }
+    })
+    expect(error).toMatchObject({ code: 'ERR_INVALID_ARG_TYPE' })
+    expect(check.bytes).toBe(0)
+  })
+
+  it('accepts strings, counted as UTF-8 bytes', async () => {
+    const check = new NodeLengthCheck({ expected: 4 })
+    expect((await runBytes(check, ['ab' as unknown as Uint8Array, 'é' as unknown as Uint8Array])).length).toBe(4)
+    expect(check.bytes).toBe(4)
+  })
+
+  it('forwards only highWaterMark and signal to the Node stream', async () => {
+    const options = { max: 10, highWaterMark: 7, objectMode: true, autoDestroy: false } as never
+    const check = new NodeLengthCheck(options)
+    expect(check.writableObjectMode).toBe(false)
+    expect(check.readableObjectMode).toBe(false)
+    expect(check.writableHighWaterMark).toBe(7)
+    await runBytes(check, [new Uint8Array(3)])
+    // autoDestroy stays on: the stream cleans itself up once finished.
+    expect(check.destroyed).toBe(true)
   })
 })
 

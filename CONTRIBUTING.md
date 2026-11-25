@@ -6,7 +6,7 @@ Node via fnm (`.node-version`), pnpm only (version pinned in `package.json`).
 
 ```sh
 pnpm install
-pnpm check   # typecheck, tests, build, publint, attw, web-bundle guard
+pnpm check   # typecheck, tests, build, typecheck test/consumer against dist, publint, attw, web-bundle guard
 ```
 
 `pnpm test:browser` runs `test/browser/` (every `syke/web` utility, and the web `Spool` in depth against real OPFS

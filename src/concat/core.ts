@@ -6,6 +6,7 @@ import {
   assertIterable,
   assertSource,
   iterablePuller,
+  noop,
 } from '../shared/combinator/core.ts'
 
 /** A source, or a function that opens one when it's needed. */
@@ -25,6 +26,8 @@ export class ConcatCore<S> implements Producer<unknown> {
   #outlet: Outlet<unknown> | null = null
   #current: Puller<unknown> | null = null
   #finished = false
+  /** Why the output was cancelled or failed, for sources a factory returns after that. */
+  #reason: unknown = undefined
   /** A failure that came before the output stream was made. */
   #error: { reason: unknown } | null = null
 
@@ -34,9 +37,20 @@ export class ConcatCore<S> implements Producer<unknown> {
     if (Array.isArray(sources)) {
       // Check them all before opening any, so a bad one leaves the rest untouched.
       for (const item of sources) if (typeof item !== 'function') assertSource(item)
-      const items = sources.map((item) => (typeof item === 'function' ? item : this.#openSource(item)))
+      let items: (Lazy<S> | Puller<unknown>)[]
+      try {
+        items = sources.map((item) => (typeof item === 'function' ? item : this.#openSource(item)))
+      } catch (error) {
+        // A later source failed to open (the same ReadableStream twice, say):
+        // hand the earlier ones back untouched, as if we'd never seen them.
+        for (const puller of this.#opened) puller.release()
+        this.#opened.clear()
+        throw error
+      }
       this.#items = iterablePuller<Lazy<S> | Puller<unknown>>(items)
     } else {
+      // Any other iterable is read lazily, one source per turn (a generator
+      // may make them on demand), so nothing is opened here.
       this.#items = iterablePuller(sources as Iterable<Lazy<S>>)
     }
   }
@@ -57,8 +71,9 @@ export class ConcatCore<S> implements Producer<unknown> {
             this.#outlet?.end()
             return
           }
-          this.#current = await this.#resolve(next.value)
-          if (this.#finished) return
+          const current = await this.#resolve(next.value)
+          if (!current || this.#finished) return
+          this.#current = current
         }
         const result = await this.#current.next()
         if (this.#finished) return
@@ -77,16 +92,25 @@ export class ConcatCore<S> implements Producer<unknown> {
   cancel(reason: unknown): void {
     if (this.#finished) return
     this.#finished = true
+    this.#reason = reason
     this.#cancelOpened(reason)
   }
 
-  async #resolve(item: Lazy<S> | Puller<unknown>): Promise<Puller<unknown>> {
+  /** Opens an item, or returns null if the output finished while a factory ran. */
+  async #resolve(item: Lazy<S> | Puller<unknown>): Promise<Puller<unknown> | null> {
     if (this.#opened.has(item as Puller<unknown>)) return item as Puller<unknown>
     const source = typeof item === 'function' ? await (item as () => S | Promise<S>)() : (item as S)
-    const puller = this.#openSource(source)
-    // Cancelled while the factory was running.
-    if (this.#finished) puller.cancel()
-    return puller
+    if (this.#finished) {
+      // Cancelled (or failed) while the factory ran: release what it returned
+      // without making it part of the output.
+      try {
+        this.#open(source, noop).cancel(this.#reason)
+      } catch {
+        // Not a source we can open, so nothing to release.
+      }
+      return null
+    }
+    return this.#openSource(source)
   }
 
   #openSource(source: S): Puller<unknown> {
@@ -100,6 +124,7 @@ export class ConcatCore<S> implements Producer<unknown> {
   #fail(error: unknown) {
     if (this.#finished) return
     this.#finished = true
+    this.#reason = error
     this.#cancelOpened(error)
     if (this.#outlet) this.#outlet.error(error)
     else this.#error = { reason: error }

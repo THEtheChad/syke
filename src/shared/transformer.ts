@@ -50,7 +50,30 @@ export interface Sink<O> {
   readonly full: boolean
 }
 
-/** Runs `step` and reports its outcome, sync or async, to `done`. */
+/**
+ * Longest delay `setTimeout` honours (about 24.8 days). Engines store the
+ * delay as a signed 32-bit integer and fire a longer one after 1 ms instead,
+ * so a longer wait must be split into steps of at most this.
+ */
+export const MAX_TIMEOUT_MS = 0x7fff_ffff
+
+/**
+ * Makes `error` safe to report as a failure. Node treats any falsy error
+ * (`undefined`, `null`, `0`, `''`, `false`, `NaN`) handed to a stream
+ * callback or `destroy()` as success, so a falsy one is wrapped in an `Error`
+ * that keeps the original value as its `cause`. Anything truthy passes through.
+ */
+export function toFailure(error: unknown): Error {
+  if (error) return error as Error
+  return new Error(`syke: stream failed with ${describeValue(error)}`, { cause: error })
+}
+
+function describeValue(value: unknown): string {
+  if (typeof value === 'string') return `'${value}'`
+  return String(value)
+}
+
+/** Runs `step` and reports its outcome, sync or async, to `done`; a failure is always truthy. */
 export function settle(
   step: () => void | Promise<void>,
   done: (error?: Error | null) => void,
@@ -59,9 +82,9 @@ export function settle(
   try {
     result = step()
   } catch (error) {
-    done(error as Error)
+    done(toFailure(error))
     return
   }
-  if (result) result.then(() => done(), done)
+  if (result) result.then(() => done(), (error: unknown) => done(toFailure(error)))
   else done()
 }

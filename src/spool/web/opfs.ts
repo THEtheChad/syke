@@ -1,5 +1,6 @@
 import { ExtentMap, type Region } from '../core/extents.ts'
 import { OPFS_WORKER_SOURCE } from './opfsWorker.ts'
+import { storageFreed } from './quota.ts'
 import { FILE_PREFIX, type SpoolStorage, type SpoolStore } from './store.ts'
 
 /** How long a new worker gets to report in before OPFS is given up on. */
@@ -38,6 +39,11 @@ class WorkerChannel {
       event.preventDefault?.()
       this.#die(new Error(`syke: the OPFS worker failed${event.message ? `: ${event.message}` : ''}`))
     })
+    // A reply that couldn't be deserialized can't be matched to its request,
+    // which would then wait forever: fail them all.
+    worker.addEventListener('messageerror', () => {
+      this.#die(new Error('syke: a reply from the OPFS worker could not be read'))
+    })
   }
 
   call<T>(message: object, transfer: Transferable[] = []): Promise<T> {
@@ -45,7 +51,12 @@ class WorkerChannel {
     const id = this.#nextId++
     return new Promise<T>((resolve, reject) => {
       this.#pending.set(id, { resolve: resolve as (value: unknown) => void, reject })
-      this.#worker.postMessage({ ...message, id }, transfer)
+      try {
+        this.#worker.postMessage({ ...message, id }, transfer)
+      } catch (error) {
+        this.#pending.delete(id)
+        reject(error as Error)
+      }
     })
   }
 
@@ -98,6 +109,7 @@ function startWorker(): Promise<WorkerChannel> {
       clearTimeout(timer)
       worker.removeEventListener('message', onMessage)
       worker.removeEventListener('error', onError)
+      worker.removeEventListener('messageerror', onMessageError)
       URL.revokeObjectURL(url)
       if (!error) return resolve(new WorkerChannel(worker))
       worker.terminate()
@@ -111,12 +123,16 @@ function startWorker(): Promise<WorkerChannel> {
       event.preventDefault?.()
       done(new Error(`syke: the OPFS worker could not start${event.message ? `: ${event.message}` : ''}`))
     }
+    const onMessageError = () => {
+      done(new Error('syke: the OPFS worker could not start: its message could not be read'))
+    }
     const timer = setTimeout(() => {
       // A slow start may just be a busy page, so it isn't remembered as unsupported.
       done(Object.assign(new Error('syke: the OPFS worker did not start in time'), { transient: true }))
     }, WORKER_START_TIMEOUT_MS)
     worker.addEventListener('message', onMessage)
     worker.addEventListener('error', onError)
+    worker.addEventListener('messageerror', onMessageError)
   })
 }
 
@@ -155,6 +171,7 @@ export class OpfsStore implements SpoolStore {
   readonly #extents: ExtentMap
   readonly #release: () => void
   #placed: Region | null = null
+  #writing = false
   #closing: Promise<void> | null = null
 
   static async open(id: string, chunkSize: number, maxBytes: number, release: () => void): Promise<OpfsStore> {
@@ -165,6 +182,9 @@ export class OpfsStore implements SpoolStore {
     } catch (error) {
       // The file may exist even though the handle failed.
       await channel.call({ op: 'close', name }).catch(() => {})
+      // The origin may never use OPFS (a private window, an opaque origin):
+      // don't start a worker for every spool just to hear that again.
+      if ((error as { name?: unknown }).name === 'SecurityError') unsupported ??= error as Error
       channel.unref()
       throw error
     }
@@ -202,6 +222,7 @@ export class OpfsStore implements SpoolStore {
     this.#placed = null
     const before = this.#extents.fileSize
     const buffer = bytes.buffer as ArrayBuffer
+    this.#writing = true
     try {
       await this.#channel.call(
         { op: 'write', name: this.#name, at: placed.position, buffer, offset: byteOffset, length: byteLength },
@@ -214,6 +235,8 @@ export class OpfsStore implements SpoolStore {
         Object.assign(error as object, { bytes: new Uint8Array(returned, byteOffset, byteLength) })
       }
       throw error
+    } finally {
+      this.#writing = false
     }
     // `bytes` is detached now; use the lengths saved before the transfer.
     this.#extents.wrote(placed.position, byteLength)
@@ -230,7 +253,27 @@ export class OpfsStore implements SpoolStore {
     })
     if (result.length < length) throw new Error(`syke: spool file ${this.#name} ended early`)
     this.#extents.read(length)
+    this.#shrinkIfEmpty()
     return [new Uint8Array(result.buffer, 0, length)]
+  }
+
+  /**
+   * Everything is read: give the file's space back to the origin. Only when
+   * no write is placed or in flight, so none can land past the new end; the
+   * worker runs requests in order, so later writes follow the truncate.
+   * Writes are placed from the start of the file at once, but the space is
+   * only given back to the quota budget once the truncate has happened.
+   */
+  #shrinkIfEmpty() {
+    const size = this.#extents.fileSize
+    if (!this.#extents.empty || this.#writing || this.#placed || size === 0) return
+    this.#extents.reset()
+    // On failure the file just stays larger: everything in it is read, and
+    // rewriting that space counts as growth again, which errs on the safe side.
+    this.#channel.call({ op: 'truncate', name: this.#name, size: 0 }).then(
+      () => storageFreed(size),
+      () => {},
+    )
   }
 
   close(): Promise<void> {
