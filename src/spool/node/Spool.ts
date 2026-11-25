@@ -387,29 +387,37 @@ export class Spool extends Duplex {
 
   /** Encodes `records[start..]` and spills them, about `chunkSize` bytes per write. */
   async #spillRecords(records: Entry[], start: number) {
-    let payloads: Uint8Array[] = []
+    // Frames go straight into one buffer: no per-record frame copies. Each is
+    // copied in as soon as it's encoded, as a codec may reuse its output buffer.
+    let batch: Buffer | null = null
     let bytes = 0
     const write = async () => {
-      // Frames go straight into one buffer: no per-record frame copies.
-      const batch = Buffer.allocUnsafe(bytes)
-      let offset = 0
-      for (const payload of payloads) offset = writeFrame(batch, offset, payload)
-      payloads = []
+      const data = (batch as Buffer).subarray(0, bytes)
+      batch = null
       bytes = 0
-      await this.#spill(batch)
+      await this.#spill(data)
     }
 
     for (let i = start; i < records.length; i++) {
       if (this.destroyed) return
       const record = (records[i] as Entry).chunk
       // If the consumer caught up mid-batch, the rest can skip the codec.
-      if (i > start && payloads.length === 0 && this.#acceptRecord(record)) continue
+      if (i > start && batch === null && this.#acceptRecord(record)) continue
       const payload = encodeRecord(this.#codec, record)
-      payloads.push(payload)
-      bytes += FRAME_HEADER_BYTES + payload.byteLength
+      const frameSize = FRAME_HEADER_BYTES + payload.byteLength
+      const needed = bytes + frameSize
+      if (batch === null || needed > batch.length) {
+        // Sized for the records left, guessing they're like this one, up to a
+        // chunk; a record that doesn't fit grows the batch.
+        const guess = Math.min(this.#chunkSize, Math.max(2 * bytes, bytes + frameSize * (records.length - i)))
+        const grown = Buffer.allocUnsafe(Math.max(needed, guess))
+        if (batch !== null) batch.copy(grown, 0, 0, bytes)
+        batch = grown
+      }
+      bytes = writeFrame(batch, bytes, payload)
       if (bytes >= this.#chunkSize) await write()
     }
-    if (payloads.length > 0 && !this.destroyed) await write()
+    if (batch !== null && !this.destroyed) await write()
   }
 
   /** Object mode: decodes every record completed by `bytes` into the ready queue. */

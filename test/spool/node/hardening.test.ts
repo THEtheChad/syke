@@ -576,6 +576,56 @@ describe('write batching', () => {
     )
     expect(received).toEqual(records)
   })
+
+  it("keeps each record's bytes when the codec reuses one output buffer", async () => {
+    // A common codec optimization: encode into a scratch buffer and return a view of it.
+    const scratch = new Uint8Array(1024)
+    const text = new TextEncoder()
+    const codec = {
+      encode: (value: unknown) => scratch.subarray(0, text.encodeInto(JSON.stringify(value), scratch).written),
+      decode: (bytes: Uint8Array) => JSON.parse(new TextDecoder().decode(bytes)),
+    }
+    const records = Array.from({ length: 2000 }, (_, i) => ({ i: 1000 + i, pad: 'x'.repeat(i % 7) }))
+    const spool = new Spool({ objectMode: true, codec, dir: tmp.path, minFreeSpace: false })
+    for (const record of records) spool.write(record)
+    spool.end()
+    await until(() => spool.writableFinished)
+    expect(spool.filepath).not.toBeNull()
+
+    const received: unknown[] = []
+    await pipeline(
+      spool,
+      new Writable({
+        objectMode: true,
+        write: (record, _encoding, done) => {
+          received.push(record)
+          done()
+        },
+      }),
+    )
+    expect(received).toEqual(records)
+  })
+
+  it('writes a record larger than chunkSize whole, between batches', async () => {
+    const records = [{ s: 'a' }, { s: 'b'.repeat(4 * KiB) }, { s: 'c' }, { s: 'd'.repeat(300) }, { s: 'e' }]
+    const spool = new Spool({ objectMode: true, dir: tmp.path, chunkSize: 256, codec: jsonCodec, minFreeSpace: false })
+    for (const record of records) spool.write(record)
+    spool.end()
+    await until(() => spool.writableFinished)
+
+    const received: unknown[] = []
+    await pipeline(
+      spool,
+      new Writable({
+        objectMode: true,
+        write: (record, _encoding, done) => {
+          received.push(record)
+          done()
+        },
+      }),
+    )
+    expect(received).toEqual(records)
+  })
 })
 
 describe('cleanup', () => {
