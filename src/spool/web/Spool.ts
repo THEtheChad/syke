@@ -253,14 +253,14 @@ export class Spool<T = Uint8Array> implements ReadableWritablePair<T, T> {
     }
 
     // The consumer is waiting and nothing is queued ahead: hand it straight over.
-    if (this.#wantsData && this.#memory.length === 0 && !this.#behind()) {
+    if (this.#wantsData && this.#memory.length === 0 && !this.#spilled()) {
       this.#deliver(chunk)
       return
     }
 
     // Memory only takes data while nothing is spilled, so memory is always older.
     const size = this.#codec ? 1 : (chunk as Uint8Array).byteLength
-    if (!this.#behind() && this.#memorySize + size <= this.#memoryThreshold) {
+    if (!this.#spilled() && this.#memorySize + size <= this.#memoryThreshold) {
       this.#memory.push(chunk)
       this.#memorySize += size
       return
@@ -277,7 +277,12 @@ export class Spool<T = Uint8Array> implements ReadableWritablePair<T, T> {
     this.#pump()
   }
 
-  /** Something is queued in storage, in flight or in the batch. */
+  /**
+   * Something is queued in storage, in flight or in the batch: a new chunk
+   * must queue behind it rather than overtake it through memory. (Part of a
+   * record waiting in the decoder implies this: the rest of its frame is
+   * still spilled, since `#write()` appends a whole frame before the next.)
+   */
   #spilled(): boolean {
     return (
       !this.#batch.empty ||
@@ -286,14 +291,6 @@ export class Spool<T = Uint8Array> implements ReadableWritablePair<T, T> {
       this.#out.length > 0 ||
       !(this.#store?.empty ?? true)
     )
-  }
-
-  /**
-   * Spilled data, or part of a record read back, is waiting: a new chunk
-   * must queue behind it rather than overtake it through memory.
-   */
-  #behind(): boolean {
-    return this.#spilled() || (this.#decoder?.pendingBytes ?? 0) > 0
   }
 
   #startWriter() {
