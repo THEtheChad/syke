@@ -1,3 +1,6 @@
+import { execFileSync } from 'node:child_process'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { ParallelMap as NodeParallelMap } from '../../src/node.ts'
 import { ParallelMap as WebParallelMap } from '../../src/web.ts'
@@ -368,5 +371,41 @@ describe('ParallelMapCore', () => {
     head.resolve(0)
     await turns(1)
     expect(pushed).toEqual([])
+  })
+
+  // Closing alone already stops them being emitted; what close() clearing the
+  // queue adds is letting them be garbage-collected while the core lives on.
+  it('lets go of finished results held back in order when closed', () => {
+    const entry = pathToFileURL(join(import.meta.dirname, '../../src/parallelMap/core.ts')).href
+    const child = `
+      const { ParallelMapCore } = await import(${JSON.stringify(entry)})
+      const refs = []
+      const core = new ParallelMapCore((i) => {
+        if (i === 0) return new Promise(() => {})
+        const result = { payload: new Uint8Array(1024) }
+        refs.push(new WeakRef(result))
+        return result
+      }, { concurrency: 4 })
+      globalThis.core = core
+      core.start({ push() {}, end() {}, error() {}, full: false })
+      core.transform(0)
+      core.transform(1)
+      core.transform(2)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      core.close()
+      let alive = refs.length
+      for (let i = 0; i < 50 && alive > 0; i++) {
+        globalThis.gc()
+        await new Promise((resolve) => setTimeout(resolve, 10))
+        alive = refs.filter((ref) => ref.deref() !== undefined).length
+      }
+      console.log(JSON.stringify({ created: refs.length, alive }))
+    `
+    const output = execFileSync(process.execPath, ['--expose-gc', '--input-type=module', '-e', child], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'inherit'],
+      timeout: 20_000,
+    })
+    expect(JSON.parse(output)).toEqual({ created: 2, alive: 0 })
   })
 })
