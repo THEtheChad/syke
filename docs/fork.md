@@ -77,4 +77,6 @@ mutate one.
 - Once every branch is gone, the source is cancelled (web) or destroyed (Node).
 - In `syke/node`, a source yielding `null` errors every branch with a `TypeError`
   (Node streams treat `null` as end-of-stream) instead of ending early.
-- Invalid options throw a `TypeError` or `RangeError` from `fork()`.
+- Invalid options, or an invalid source (including a locked `ReadableStream`),
+  throw a `TypeError` or `RangeError` from `fork()`, before any `buffer` is
+  made.

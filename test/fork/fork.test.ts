@@ -182,12 +182,24 @@ describe.each(runtimes)('fork (%s)', (runtime) => {
     expect(first.state.released).toBe(true)
   })
 
-  it('releases the buffers when the source cannot be opened', async () => {
+  it('rejects a locked ReadableStream before making any buffer', () => {
     const locked = new ReadableStream()
     locked.getReader()
+    const buffer = vi.fn(roomy(1))
+    expect(() => fork(locked, { buffer })).toThrow(/syke: source is a locked ReadableStream/)
+    expect(buffer).not.toHaveBeenCalled()
+  })
+
+  it('releases the buffers when the source cannot be opened', async () => {
+    const error = new Error('no iterator')
+    const broken = {
+      [Symbol.iterator]() {
+        throw error
+      },
+    }
     const made = [tracked(), tracked()]
     let i = 0
-    expect(() => fork(locked, { buffer: () => made[i++]!.make() })).toThrow(TypeError)
+    expect(() => fork(broken, { buffer: () => made[i++]!.make() })).toThrow(error)
     await settle()
     expect(made.map((m) => m.state.released)).toEqual([true, true])
   })
@@ -242,7 +254,7 @@ describe.each(runtimes)('fork (%s)', (runtime) => {
 describe('ForkCore', () => {
   const outlet = () => ({ push: vi.fn(), end: vi.fn(), error: vi.fn() }) satisfies Outlet<unknown>
   /** A source that never produces anything. */
-  const idle = (): Puller<unknown> => ({ next: () => new Promise(() => {}), cancel: () => {} })
+  const idle = (): Puller<unknown> => ({ next: () => new Promise(() => {}), cancel: () => {}, release: () => {} })
 
   it('errors a branch that starts after the source failed', () => {
     const error = new Error('early')

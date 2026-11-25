@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { merge as nodeMerge } from '../../src/node.ts'
 import { merge as webMerge } from '../../src/web.ts'
 import { pick, runtimes } from '../harness.ts'
-import { collect, collectSettled, generator, probe, reader, readUpTo, settle } from '../streamHarness.ts'
+import { bystanders, collect, collectSettled, generator, probe, reader, readUpTo, settle, untouched } from '../streamHarness.ts'
 
 describe.each(runtimes)('merge (%s)', (runtime) => {
   const merge = pick(runtime, { node: nodeMerge, web: webMerge }) as (sources: unknown) => any
@@ -102,24 +102,37 @@ describe.each(runtimes)('merge (%s)', (runtime) => {
     expect(b.returned).toBe(true)
   })
 
-  it('releases the earlier sources when a later one cannot be opened', async () => {
-    const first = probe(runtime)
+  it('rejects a locked ReadableStream before opening anything, leaving the other sources untouched', async () => {
+    const b = bystanders()
     const locked = new ReadableStream()
     locked.getReader()
-    expect(() => merge([first.stream, locked])).toThrow(TypeError)
-    await settle()
-    expect(first.cancelled).toBe(true)
+    expect(() => merge([...b.sources, locked])).toThrow(/syke: source is a locked ReadableStream/)
+    expect(await b.state()).toEqual(untouched)
+  })
 
-    const second = probe(runtime)
+  it('hands the other sources back untouched when one cannot be opened', async () => {
+    // The same stream twice: the second getReader() throws.
+    const b = bystanders()
+    const twice = new ReadableStream({
+      start(controller) {
+        controller.enqueue('t')
+        controller.close()
+      },
+    })
+    expect(() => merge([...b.sources, twice, twice])).toThrow(TypeError)
+    expect(await b.state()).toEqual(untouched)
+    expect(await collect(twice)).toEqual(['t'])
+
+    // An iterable whose iterator can't be made.
     const error = new Error('no iterator')
     const broken = {
       [Symbol.iterator]() {
         throw error
       },
     }
-    expect(() => merge([second.stream, broken])).toThrow(error)
-    await settle()
-    expect(second.cancelled).toBe(true)
+    const c = bystanders()
+    expect(() => merge([...c.sources, broken])).toThrow(error)
+    expect(await c.state()).toEqual(untouched)
   })
 
   it('reads sources whose Symbol.asyncIterator is present but undefined', async () => {

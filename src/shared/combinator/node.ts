@@ -51,15 +51,20 @@ export function mirror(source: unknown): OutputOptions {
 function readablePuller(stream: Readable, onError: OnError): Puller<unknown> {
   // Listening also stops an error before the first read crashing the process.
   stream.on('error', onError)
-  const iterator = stream[Symbol.asyncIterator]()
+  // Made on the first read, so release() leaves nothing of ours on the stream.
+  let iterator: AsyncIterator<unknown> | null = null
   return {
     async next() {
+      iterator ??= stream[Symbol.asyncIterator]()
       const result = await iterator.next()
       return result.done ? { done: true, value: undefined } : { done: false, value: result.value }
     },
     cancel() {
       // A pending next() rejects with a premature close, which the caller ignores.
       if (!stream.destroyed) stream.destroy()
+    },
+    release() {
+      stream.off('error', onError)
     },
   }
 }

@@ -41,8 +41,9 @@ export class ConcatCore<S> implements Producer<unknown> {
       try {
         items = sources.map((item) => (typeof item === 'function' ? item : this.#openSource(item)))
       } catch (error) {
-        // A later source failed to open (a locked ReadableStream, say): release the earlier ones.
-        for (const puller of this.#opened) puller.cancel(error)
+        // A later source failed to open (the same ReadableStream twice, say):
+        // hand the earlier ones back untouched, as if we'd never seen them.
+        for (const puller of this.#opened) puller.release()
         this.#opened.clear()
         throw error
       }
