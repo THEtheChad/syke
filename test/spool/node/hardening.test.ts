@@ -4,7 +4,7 @@ import { getEventListeners } from 'node:events'
 import { readdirSync, statSync } from 'node:fs'
 import { type FileHandle, open, readdir, statfs } from 'node:fs/promises'
 import { join } from 'node:path'
-import { Readable, Stream, Writable } from 'node:stream'
+import { Duplex, Readable, Stream, Writable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { pathToFileURL } from 'node:url'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -239,6 +239,42 @@ describe('Spool.from() errors', () => {
     const failing = new Writable({ write: (_chunk, _encoding, done) => done(new Error('disk full')) })
     await expect(pipeline(Spool.from(src, { dir: tmp.path }), failing)).rejects.toThrow('disk full')
     await until(() => src.destroyed)
+  })
+
+  it('keeps the backlog when a Duplex source is destroyed after its readable side ends', async () => {
+    // Socket-like: the readable side ends while the writable side is still
+    // open, then the app destroys it, as `socket.destroy()` after 'end' does.
+    const data = randomBytes(MiB)
+    const src = new Duplex({ read() {}, write: (_chunk, _encoding, done) => done() })
+    for (let i = 0; i < data.length; i += 16 * KiB) src.push(data.subarray(i, i + 16 * KiB))
+    src.push(null)
+    src.on('end', () => setTimeout(() => src.destroy(), 5))
+    const spool = Spool.from(src, { dir: tmp.path, minFreeSpace: false })
+    const errors: Error[] = []
+    spool.on('error', (error) => errors.push(error))
+    const out = sink()
+    out.pause()
+    spool.pipe(out.stream)
+    await until(() => src.destroyed)
+    await sleep(20)
+    out.resume()
+    await closed(spool)
+    expect(errors).toEqual([])
+    await until(() => out.stream.writableFinished)
+    expect(out.received.equals(data)).toBe(true)
+  })
+
+  it('still fails when a Duplex source closes before its readable side ends', async () => {
+    const src = new Duplex({ read() {}, write: (_chunk, _encoding, done) => done() })
+    src.push(Buffer.from('partial'))
+    const spool = Spool.from(src, { dir: tmp.path })
+    const errors: Error[] = []
+    spool.on('error', (error) => errors.push(error))
+    spool.resume()
+    await sleep(5)
+    src.destroy()
+    await closed(spool)
+    expect(errors.map((e) => (e as NodeJS.ErrnoException).code)).toEqual(['ERR_STREAM_PREMATURE_CLOSE'])
   })
 
   it('reads an old-style stream', async () => {

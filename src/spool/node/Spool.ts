@@ -767,7 +767,10 @@ function toNodeReadable(source: SpoolSource<unknown>, objectMode: boolean): Read
  */
 function connect(source: Readable, spool: Spool): void {
   source.pipe(spool)
-  finished(source, (error) => {
+  // Only the readable side matters: a Duplex (a socket, say) destroyed after
+  // its readable side ended has delivered everything, whatever its writable
+  // side was doing, so that close is not premature.
+  finished(source, { writable: false }, (error) => {
     if (error && !spool.destroyed) spool.destroy(error)
   })
   spool.once('close', () => {
