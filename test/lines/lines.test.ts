@@ -1,6 +1,7 @@
 import { ReadableStream as NodeReadableStream } from 'node:stream/web'
 import { runInNewContext } from 'node:vm'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { LineSplitter } from '../../src/lines/core.ts'
 import { LineTooLongError, Lines as NodeLines } from '../../src/node.ts'
 import { LineTooLongError as WebLineTooLongError, Lines as WebLines } from '../../src/web.ts'
 import { chunk, pick, run, runSettled, runtimes } from '../harness.ts'
@@ -183,6 +184,35 @@ describe('Lines (node)', () => {
     expect(lines.writableHighWaterMark).toBe(5)
     // Strings stay strings: decodeStrings: true would have re-encoded them as UTF-8 bytes.
     expect((lines as unknown as { _writableState: { decodeStrings: boolean } })._writableState.decodeStrings).toBe(false)
+  })
+})
+
+describe('LineSplitter', () => {
+  // The error is the same either way; failing first spares building a string
+  // of the whole overlong line just to measure it.
+  it('fails an overlong line before joining its pieces', () => {
+    const splitter = new LineSplitter({ maxLineLength: 4 })
+    const noop = () => {}
+    splitter.write('abc', noop)
+    const join = vi.spyOn(Array.prototype, 'join')
+    let error: unknown
+    try {
+      splitter.write(`${'x'.repeat(1000)}\n`, noop)
+    } catch (e) {
+      error = e
+    }
+    const joins = join.mock.calls.length
+    join.mockRestore()
+    expect(error).toBeInstanceOf(LineTooLongError)
+    expect(joins).toBe(0)
+  })
+
+  it('still joins a line within the limit', () => {
+    const splitter = new LineSplitter({ maxLineLength: 4 })
+    const lines: string[] = []
+    splitter.write('ab', (line) => lines.push(line))
+    splitter.write('cd\r\n', (line) => lines.push(line))
+    expect(lines).toEqual(['abcd'])
   })
 })
 
