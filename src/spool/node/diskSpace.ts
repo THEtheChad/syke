@@ -32,15 +32,43 @@ interface DirState {
 }
 
 const dirs = new Map<string, DirState>()
+/** Size `dirs` may reach before it's swept for idle entries. */
+const SWEEP_AT = 16
+let sweepAt = SWEEP_AT
 
 function stateOf(dir: string): DirState {
   const key = resolve(dir)
   let state = dirs.get(key)
   if (!state) {
+    if (dirs.size >= sweepAt) sweepIdle()
     state = { snapshot: null, refreshing: null, grown: 0, inFlight: 0 }
     dirs.set(key, state)
   }
   return state
+}
+
+/**
+ * Drops directories nothing is waiting on. An idle entry is one whose reading
+ * is stale with no write in flight or reading pending: the next budget would
+ * read the filesystem again and keep nothing of it, so a fresh entry is the
+ * same. Sweeps grow further apart while many directories are busy, so
+ * creating entries stays O(1) amortized.
+ */
+function sweepIdle(): void {
+  for (const [key, state] of dirs) {
+    if (state.inFlight === 0 && state.refreshing === null && stale(state)) dirs.delete(key)
+  }
+  sweepAt = Math.max(SWEEP_AT, 2 * dirs.size)
+}
+
+/** How many directories are tracked, for tests. */
+export function trackedDirCount(): number {
+  return dirs.size
+}
+
+/** How many directories' memory checks are remembered, for tests. */
+export function memoryCheckCount(): number {
+  return memoryChecks.size
 }
 
 function stale(state: DirState): boolean {
@@ -120,16 +148,26 @@ export function isNoSpaceError(error: unknown): boolean {
 
 const TMPFS_MAGIC = 0x01021994
 const RAMFS_MAGIC = 0x858458f6
+/** Directories whose check is remembered; the least recently used is forgotten first. */
+const MEMORY_CHECKS_KEPT = 64
 // One check per directory, whatever it found, shared by concurrent callers.
+// Map order is recency: oldest first.
 const memoryChecks = new Map<string, Promise<void>>()
 
-/** Warns once per directory when "disk" is really memory (tmpfs/ramfs). */
+/**
+ * Warns once per directory when "disk" is really memory (tmpfs/ramfs). Only
+ * the last `MEMORY_CHECKS_KEPT` directories are remembered, so a process that
+ * cycles through more may check (and warn about) one again.
+ */
 export function warnIfMemoryBacked(dir: string): Promise<void> {
   if (process.platform !== 'linux') return Promise.resolve()
   const key = resolve(dir)
   let check = memoryChecks.get(key)
-  if (!check) {
-    check = statfs(key).then(
+  if (check) {
+    memoryChecks.delete(key)
+    memoryChecks.set(key, check)
+  } else {
+    const current: Promise<void> = statfs(key).then(
       ({ type }) => {
         if (type !== TMPFS_MAGIC && type !== RAMFS_MAGIC) return
         process.emitWarning(
@@ -139,10 +177,14 @@ export function warnIfMemoryBacked(dir: string): Promise<void> {
       },
       () => {
         // Couldn't tell (the directory may not exist yet): ask again next time.
-        memoryChecks.delete(key)
+        if (memoryChecks.get(key) === current) memoryChecks.delete(key)
       },
     )
+    check = current
     memoryChecks.set(key, check)
+    if (memoryChecks.size > MEMORY_CHECKS_KEPT) {
+      memoryChecks.delete(memoryChecks.keys().next().value as string)
+    }
   }
   return check
 }

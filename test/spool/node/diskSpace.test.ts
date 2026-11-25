@@ -6,7 +6,9 @@ import {
   diskFull,
   freeSpaceBudget,
   isNoSpaceError,
+  memoryCheckCount,
   reserveGrowth,
+  trackedDirCount,
   warnIfMemoryBacked,
 } from '../../../src/spool/node/diskSpace.ts'
 
@@ -155,6 +157,32 @@ describe('growth accounting', () => {
   })
 })
 
+describe('directory bookkeeping', () => {
+  it('forgets directories once their reading is stale and nothing is in flight', async () => {
+    fakeStatfs({ bavail: 1000, blocks: 1000, bsize: 1 })
+    for (let i = 0; i < 1000; i++) {
+      const dir = freshDir()
+      await freeSpaceBudget(dir, { bytes: 0 })
+      reserveGrowth(dir, 10)(10)
+      diskFreed(dir, 10)
+      now += 1000
+    }
+    expect(trackedDirCount()).toBeLessThanOrEqual(32)
+  })
+
+  it('keeps a directory with a write in flight, so its growth still counts', async () => {
+    fakeStatfs({ bavail: 1000, blocks: 1000, bsize: 1 })
+    const busy = freshDir()
+    await freeSpaceBudget(busy, { bytes: 0 })
+    const settle = reserveGrowth(busy, 300)
+    now += 1000
+    for (let i = 0; i < 100; i++) await freeSpaceBudget(freshDir(), { bytes: 0 })
+    // A fresh reading doesn't include the write still in flight.
+    expect(await freeSpaceBudget(busy, { bytes: 0 })).toBe(700)
+    settle(300)
+  })
+})
+
 describe('isNoSpaceError()', () => {
   it.each([
     ['ENOSPC', true],
@@ -190,6 +218,24 @@ describe.runIf(process.platform === 'linux')('warnIfMemoryBacked()', () => {
     await warnIfMemoryBacked(dir)
     expect(statfs).toHaveBeenCalledTimes(1)
     expect(warn).not.toHaveBeenCalled()
+  })
+
+  it('remembers only the most recently used directories', async () => {
+    fakeStatfs({ bavail: 1, blocks: 1, bsize: 1, type: EXT4 })
+    const first = freshDir()
+    const kept = freshDir()
+    await warnIfMemoryBacked(first)
+    await warnIfMemoryBacked(kept)
+    for (let i = 0; i < 200; i++) {
+      await warnIfMemoryBacked(freshDir())
+      await warnIfMemoryBacked(kept)
+    }
+    expect(memoryCheckCount()).toBeLessThanOrEqual(64)
+    vi.mocked(statfs).mockClear()
+    await warnIfMemoryBacked(kept)
+    expect(statfs).not.toHaveBeenCalled()
+    await warnIfMemoryBacked(first)
+    expect(statfs).toHaveBeenCalledTimes(1)
   })
 
   it("asks again when the directory couldn't be checked", async () => {
