@@ -347,14 +347,14 @@ describe('Spool types', () => {
   it('types byte and object-mode spools', () => {
     expectTypeOf<SpoolClass>().toExtend<ReadableWritablePair<Uint8Array, Uint8Array>>()
     expectTypeOf<SpoolClass<{ a: number }>>().toExtend<ReadableWritablePair<{ a: number }, { a: number }>>()
-    // Typechecked only (pnpm typecheck): a codec needs objectMode, and records need it too.
+    // Typechecked only (pnpm typecheck): records need objectMode. (A codec
+    // without objectMode still compiles, as in 0.1.0, and fails at runtime.)
+    // More in types.test.ts.
     const check = (S: typeof SpoolClass, codec: Codec<{ a: number }>) => {
-      expectTypeOf(S.from([new Uint8Array(1)])).toEqualTypeOf<SpoolClass<Uint8Array>>()
+      expectTypeOf(S.from([new Uint8Array(1)])).toEqualTypeOf<SpoolClass<Uint8Array<ArrayBuffer>>>()
       const records = S.from([{ a: 1 }], { objectMode: true })
       expectTypeOf(records).toEqualTypeOf<SpoolClass<{ a: number }>>()
       expectTypeOf(new S({ objectMode: true, codec })).toEqualTypeOf<SpoolClass<{ a: number }>>()
-      // @ts-expect-error a codec without objectMode
-      new S({ codec })
       // @ts-expect-error records without objectMode
       S.from([{ a: 1 }])
     }
