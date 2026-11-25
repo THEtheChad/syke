@@ -1,6 +1,6 @@
-import { assertBytes, equalBytes, fromHex, isUint8Array, toBase64, toHex } from '../shared/bytes.ts'
+import { assertUint8Array, equalBytes, fromHex, isUint8Array, toBase64, toHex } from '../shared/bytes.ts'
 import { SykeError } from '../shared/errors.ts'
-import type { Sink, Transformer } from '../shared/transformer.ts'
+import { type Sink, type Transformer, toFailure } from '../shared/transformer.ts'
 import { oneOf } from '../shared/validate.ts'
 
 /**
@@ -71,7 +71,7 @@ export class DigestCore implements Transformer<Uint8Array, Uint8Array> {
 
   transform(chunk: Uint8Array, sink: Sink<Uint8Array>): void | Promise<void> {
     try {
-      assertBytes('Digest', chunk)
+      assertUint8Array('Digest', chunk)
     } catch (error) {
       this.#fail(error)
     }
@@ -126,10 +126,15 @@ export class DigestCore implements Transformer<Uint8Array, Uint8Array> {
     }
   }
 
-  /** Rejects `digest` with the error that failed the stream (not a generic one), then throws it. */
+  /**
+   * Rejects `digest` with the error that failed the stream (not a generic
+   * one), then throws it. A falsy error is wrapped first, so both see the
+   * same `Error`.
+   */
   readonly #fail = (error: unknown): never => {
-    this.#settle(() => this.#reject(error as Error))
-    throw error
+    const failure = toFailure(error)
+    this.#settle(() => this.#reject(failure))
+    throw failure
   }
 
   #settle(settle: () => void) {

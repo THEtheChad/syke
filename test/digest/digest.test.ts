@@ -110,6 +110,31 @@ describe.each(runtimes)('Digest (%s)', (runtime) => {
     await expect(digest.digest).rejects.toBe(failure)
   })
 
+  it.each([
+    ['data', [data]],
+    ['an empty stream', []],
+  ])('fails the stream and rejects digest with the same Error when a promised hasher rejects with undefined (%s)', async (_, input) => {
+    const digest = new Digest({ hasher: Promise.reject(undefined) })
+    const error = await run(digest, input).catch((e) => e)
+    expect(error).toBeInstanceOf(Error)
+    expect(error).toMatchObject({ message: 'syke: stream failed with undefined', cause: undefined })
+    await expect(digest.digest).rejects.toBe(error)
+  })
+
+  it('rejects digest with the same wrapped Error when update() throws a falsy value', async () => {
+    const digest = new Digest({
+      hasher: {
+        update: () => {
+          throw 0
+        },
+        digest: () => '00',
+      },
+    })
+    const error = await run(digest, [data]).catch((e) => e)
+    expect(error).toMatchObject({ message: 'syke: stream failed with 0', cause: 0 })
+    await expect(digest.digest).rejects.toBe(error)
+  })
+
   it("rejects digest with a promised hasher's error on an empty stream", async () => {
     const failure = new Error('wasm failed to load')
     const digest = new Digest({ hasher: Promise.reject(failure) })

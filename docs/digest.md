@@ -66,4 +66,7 @@ already have seen them; pair `Digest` with a temporary destination you
 discard on error.
 
 A chunk that isn't a `Uint8Array` (a Node `Buffer` is one) fails the stream
-with a `TypeError`.
+with a `TypeError`, an `ArrayBuffer`, `DataView` or other typed array
+included: a hasher may read another view's elements, not its bytes. Wrap one first
+with `new Uint8Array(view.buffer, view.byteOffset, view.byteLength)`. In
+`syke/node` the byte-mode stream already turns views into `Buffer`s.

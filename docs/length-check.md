@@ -37,9 +37,27 @@ At least one is required.
 | `min` | Fewest bytes allowed. |
 | `max` | Most bytes allowed. |
 
+Each is a non-negative integer. One of 2^53 or more can't be reached, so it
+works as no limit; `Infinity`, a fraction or a negative number throws a
+`RangeError`.
+
 `syke/node` also takes `highWaterMark` and `signal`, passed to `stream.Transform`.
 
 `check.bytes` holds the number of bytes that have passed so far.
+
+## Chunk types
+
+`LengthCheck` only reads each chunk's `byteLength`, so it counts bytes in any
+form and passes every chunk on untouched:
+
+- **`syke/web`:** a `Uint8Array`, any other view (`DataView`, `Uint16Array`,
+  ...), an `ArrayBuffer` or a `SharedArrayBuffer`, from any realm.
+- **`syke/node`:** the byte-mode stream turns views and strings (as UTF-8)
+  into `Buffer`s before `LengthCheck` sees them. Node rejects a bare
+  `ArrayBuffer` itself.
+
+Anything else fails the stream with a `TypeError` rather than being
+miscounted.
 
 ## Errors
 

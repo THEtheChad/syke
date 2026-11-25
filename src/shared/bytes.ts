@@ -35,18 +35,66 @@ export function isUint8Array(value: unknown): value is Uint8Array {
   )
 }
 
-/** Fails a byte-oriented utility with a clear `TypeError` when handed anything but bytes. */
-export function assertBytes(utility: string, chunk: unknown): asserts chunk is Uint8Array {
+/**
+ * Bytes in any of the forms the platform hands them out: an `ArrayBuffer` (or
+ * `SharedArrayBuffer`) or any view of one (`Uint8Array`, `Buffer`, `DataView`,
+ * other typed arrays). What utilities that only count bytes accept.
+ */
+export type ByteSource = ArrayBufferView | ArrayBufferLike
+
+// The byteLength getters check for the real internal slot, so they tell a
+// buffer from another realm apart from an object that only looks like one.
+const bufferByteLength = byteLengthGetter(globalThis.ArrayBuffer)
+const sharedByteLength = byteLengthGetter(globalThis.SharedArrayBuffer)
+
+/** True for an `ArrayBuffer`, `SharedArrayBuffer` or any view of one, even from another realm. */
+export function isByteSource(value: unknown): value is ByteSource {
+  return ArrayBuffer.isView(value) || isBuffer(value, bufferByteLength) || isBuffer(value, sharedByteLength)
+}
+
+/** A `Uint8Array` over the same bytes as `source`: `source` itself if it is one, otherwise a view, not a copy. */
+export function asUint8Array(source: ByteSource): Uint8Array {
+  if (isUint8Array(source)) return source
+  if (ArrayBuffer.isView(source)) return new Uint8Array(source.buffer, source.byteOffset, source.byteLength)
+  return new Uint8Array(source)
+}
+
+/** The size of a chunk in bytes, failing a byte-counting utility with a clear `TypeError` when it isn't bytes. */
+export function byteLengthOf(utility: string, chunk: unknown): number {
+  if (!isByteSource(chunk)) {
+    throw new TypeError(`syke: ${utility} takes byte chunks (an ArrayBuffer or a view of one), got ${describeChunk(chunk)}`)
+  }
+  return chunk.byteLength
+}
+
+/**
+ * Fails a utility that reads or slices bytes with a clear `TypeError` when
+ * handed anything but a `Uint8Array`: indexing or `subarray()` on another
+ * typed array works in elements, not bytes, and silently gives wrong results.
+ */
+export function assertUint8Array(utility: string, chunk: unknown): asserts chunk is Uint8Array {
   if (!isUint8Array(chunk)) {
     throw new TypeError(`syke: ${utility} takes Uint8Array chunks, got ${describeChunk(chunk)}`)
   }
 }
 
-function describeChunk(chunk: unknown): string {
+export function describeChunk(chunk: unknown): string {
   if (chunk === null) return 'null'
-  if (ArrayBuffer.isView(chunk) || chunk instanceof ArrayBuffer) {
-    return Object.prototype.toString.call(chunk).slice(8, -1)
-  }
+  if (isByteSource(chunk)) return Object.prototype.toString.call(chunk).slice(8, -1)
   if (typeof chunk === 'object') return (chunk as object).constructor?.name ?? 'object'
   return typeof chunk
+}
+
+function byteLengthGetter(constructor: { prototype: object } | undefined): ((this: unknown) => number) | undefined {
+  return constructor && Object.getOwnPropertyDescriptor(constructor.prototype, 'byteLength')?.get
+}
+
+function isBuffer(value: unknown, byteLength: ((this: unknown) => number) | undefined): boolean {
+  if (byteLength === undefined || typeof value !== 'object' || value === null) return false
+  try {
+    byteLength.call(value)
+    return true
+  } catch {
+    return false
+  }
 }

@@ -70,6 +70,22 @@ describe.each(runtimes)('Cap (%s)', (runtime) => {
     await expect(run(new Cap({ maxBytes: 100 }), failing())).rejects.toThrow('boom')
   })
 
+  // A byte-mode Node stream turns any view into a Buffer before Cap sees it; the web one gets it as is.
+  it('counts the bytes of DataView and Uint16Array chunks, not their elements', async () => {
+    const view = new Uint16Array([0x0201, 0x0403])
+    const cap = new Cap({ maxBytes: 7, onLimit: 'truncate' })
+    const output = await run<ArrayBufferView>(cap, [view, new DataView(view.buffer)])
+    const bytes = output.flatMap((piece) => [...new Uint8Array(piece.buffer, piece.byteOffset, piece.byteLength)])
+    expect(bytes).toEqual([...new Uint8Array(view.buffer), ...new Uint8Array(view.buffer, 0, 3)])
+    expect(cap).toMatchObject({ bytes: 7, truncated: true })
+  })
+
+  it.each([2 ** 53, 2 ** 60, Number.MAX_VALUE])('takes maxBytes: %d as unlimited', async (maxBytes) => {
+    const cap = new Cap({ maxBytes })
+    expect((await runBytes(cap, chunk(data, 999))).equals(data)).toBe(true)
+    expect(cap).toMatchObject({ bytes: data.length, truncated: false })
+  })
+
   it('rejects invalid options', () => {
     // @ts-expect-error neither given
     expect(() => new Cap({})).toThrow(TypeError)
@@ -77,6 +93,7 @@ describe.each(runtimes)('Cap (%s)', (runtime) => {
     expect(() => new Cap({ maxBytes: 1, maxItems: 1 })).toThrow(TypeError)
     expect(() => new Cap({ maxBytes: -1 })).toThrow(RangeError)
     expect(() => new Cap({ maxItems: 1.5 })).toThrow(RangeError)
+    expect(() => new Cap({ maxBytes: Number.POSITIVE_INFINITY })).toThrow(RangeError)
     // @ts-expect-error not an action
     expect(() => new Cap({ maxBytes: 1, onLimit: 'drop' })).toThrow(/onLimit must be 'error' or 'truncate'/)
   })
@@ -87,9 +104,33 @@ describe('Cap (web)', () => {
     const cap = new WebCap({ maxBytes: 10 })
     const { output, error } = await runSettled(cap, [new Uint8Array(2), 'abc'])
     expect(error).toBeInstanceOf(TypeError)
-    expect(error.message).toBe('syke: Cap with maxBytes takes Uint8Array chunks, got string')
+    expect(error.message).toBe('syke: Cap with maxBytes takes byte chunks (an ArrayBuffer or a view of one), got string')
     expect(cap.bytes).toBe(2)
     expect(output.length).toBeLessThanOrEqual(1)
+  })
+
+  it('passes ArrayBuffer, DataView and Uint16Array chunks that fit through untouched', async () => {
+    const input = [new ArrayBuffer(4), new DataView(new ArrayBuffer(4)), new Uint16Array(2)]
+    const cap = new WebCap<ArrayBufferView | ArrayBuffer>({ maxBytes: 100 })
+    const output = await run(cap, input)
+    expect(output).toHaveLength(3)
+    output.forEach((chunk, i) => expect(chunk).toBe(input[i]))
+    expect(cap).toMatchObject({ bytes: 12, items: 3, truncated: false })
+  })
+
+  it.each([
+    ['an ArrayBuffer', (bytes: Uint8Array) => bytes.slice().buffer],
+    ['a DataView', (bytes: Uint8Array) => new DataView(bytes.slice().buffer)],
+    ['a Uint16Array', (bytes: Uint8Array) => new Uint16Array(bytes.slice().buffer)],
+    ['an offset Uint16Array', (bytes: Uint8Array) => new Uint16Array(new Uint8Array([9, 9, ...bytes]).buffer, 2)],
+  ])('truncates %s in bytes, as a Uint8Array view of the part that fits', async (_, make) => {
+    const bytes = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8])
+    const cap = new WebCap<ArrayBufferView | ArrayBuffer>({ maxBytes: 5, onLimit: 'truncate' })
+    const output = await run<Uint8Array>(cap, [make(bytes)])
+    expect(output).toHaveLength(1)
+    expect(output[0]).toBeInstanceOf(Uint8Array)
+    expect([...(output[0] as Uint8Array)]).toEqual([1, 2, 3, 4, 5])
+    expect(cap).toMatchObject({ bytes: 5, truncated: true })
   })
 
   it('counts chunks of any type with maxItems', async () => {
