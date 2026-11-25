@@ -437,4 +437,74 @@ describe('garbage collection while paused', () => {
     expect(result.before).toBeGreaterThan(0)
     expect(result.after).toBe(0)
   })
+
+  it('keeps a spool alive, and resumes it, when a read waits on a write refused for quota', () => {
+    const entry = pathToFileURL(join(import.meta.dirname, '../../../src/web.ts')).href
+    const child = `
+      import { randomBytes } from 'node:crypto'
+      import { IDBFactory, IDBKeyRange, IDBObjectStore } from 'fake-indexeddb'
+      globalThis.indexedDB = new IDBFactory()
+      globalThis.IDBKeyRange = IDBKeyRange
+      // The first put fails as a full disk makes it: the request errors and the transaction aborts.
+      let onFirstPut = null
+      const put = IDBObjectStore.prototype.put
+      IDBObjectStore.prototype.put = function (...args) {
+        const hook = onFirstPut
+        if (!hook) return put.apply(this, args)
+        onFirstPut = null
+        hook()
+        const raw = this._rawObjectStore
+        const storeRecord = raw.storeRecord
+        raw.storeRecord = () => { throw new DOMException('the write failed', 'QuotaExceededError') }
+        try { return put.apply(this, args) } finally { raw.storeRecord = storeRecord }
+      }
+      const { Spool } = await import(${JSON.stringify(entry)})
+
+      // Only the spool links its source and consumer, as in
+      // source.pipeThrough(spool).pipeTo(dest): nothing else holds it.
+      const state = { done: false, intact: false, error: null, collected: false }
+      let ref
+      ;(() => {
+        const spool = new Spool({ storage: 'indexeddb', minFreeSpace: false })
+        ref = new WeakRef(spool)
+        const data = randomBytes(4 * 1024 * 1024)
+        const reader = spool.readable.getReader()
+        const writer = spool.writable.getWriter()
+        const out = []
+        // The consumer starts while the first write is in flight, so its read waits for that write.
+        let start
+        onFirstPut = () => start()
+        const reading = new Promise((resolve) => { start = resolve }).then(async () => {
+          for (let r = await reader.read(); !r.done; r = await reader.read()) out.push(r.value)
+        })
+        const writing = (async () => {
+          for (let at = 0; at < data.length; at += 64 * 1024) await writer.write(data.subarray(at, at + 64 * 1024))
+          await writer.close()
+        })()
+        Promise.all([reading, writing]).then(
+          () => { state.intact = Buffer.concat(out).equals(data) },
+          (error) => { state.error = String(error) },
+        ).finally(() => { state.done = true })
+      })()
+
+      const started = Date.now()
+      while (!state.done && Date.now() - started < 10_000) {
+        await new Promise((resolve) => setTimeout(resolve, 10))
+        // Not in the same job as the last deref(), which keeps the spool alive until that job ends.
+        globalThis.gc()
+        if (!state.done && !ref.deref()) {
+          state.collected = true
+          break
+        }
+      }
+      console.log(JSON.stringify(state))
+      process.exit(0)
+    `
+    const output = execFileSync(process.execPath, ['--expose-gc', '--input-type=module', '-e', child], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'inherit'],
+      timeout: 30_000,
+    })
+    expect(JSON.parse(output)).toEqual({ done: true, intact: true, error: null, collected: false })
+  })
 })

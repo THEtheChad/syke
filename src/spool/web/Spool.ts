@@ -358,6 +358,13 @@ export class Spool<T = Uint8Array> implements ReadableWritablePair<T, T> {
             cause: error,
           })
         }
+        // A read that arrived during the write waited for it to land (it was
+        // older than the batch): hand it the batch now. Left waiting, only the
+        // poll timer could resume it, and that holds the spool only weakly, so
+        // a source and consumer both blocked on the spool could be collected
+        // with it mid-stream.
+        this.#pump()
+        if (this.#batch.empty) continue
         // Another page may free storage, so poll as well as wait for the reader.
         await this.#waitForSpace(true)
         continue
@@ -416,6 +423,8 @@ export class Spool<T = Uint8Array> implements ReadableWritablePair<T, T> {
       this.#wakeWriter = wake
       // The timer holds `wake` (and through it this spool) only weakly, so a
       // spool dropped while paused is still collected, and its storage freed.
+      // That is only safe because callers #pump() first: a read still waiting
+      // then has storage I/O in flight, which keeps the spool alive.
       if (poll) timer = setTimeout(weakly(wake), FREE_SPACE_POLL_MS)
     })
   }

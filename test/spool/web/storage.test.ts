@@ -247,6 +247,12 @@ describe('the storage quota', () => {
   })
 })
 
+/** Whether `check` comes true within 100 event-loop turns, without timers. */
+async function soon(check: () => boolean): Promise<boolean> {
+  for (let i = 0; i < 100 && !check(); i++) await new Promise((resolve) => setImmediate(resolve))
+  return check()
+}
+
 /** Writes `data` while a slow consumer reads it, so limits are hit and released. */
 async function spillAndDrainConcurrently(
   spool: { readable: ReadableStream<Uint8Array>; writable: WritableStream<Uint8Array> },
@@ -305,6 +311,50 @@ describe('storage failures', () => {
     expect(browser.idbPutFailures).toBe(0)
     await spool.closed
     expect(await browser.idbRecords()).toBe(0)
+  })
+
+  it('hands a read that waited on a write refused for quota the batch at once, not at the next quota poll', async () => {
+    const browser = installFakeBrowser()
+    const { Spool } = await freshPage()
+    const data = randomBytes(1 * MiB + 64 * KiB)
+    const spool = new Spool({ storage: 'indexeddb', minFreeSpace: false })
+    const reader = spool.readable.getReader()
+    const writer = spool.writable.getWriter()
+    // The quota poll never fires: only the spool itself can resume the read.
+    // (fake-indexeddb runs on setImmediate.)
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const out: Uint8Array[] = []
+      let waiting: Promise<void> | undefined
+      browser.idbPutFailures = 1
+      // Read while the write is in flight: the stream asks the spool for more,
+      // and that pull waits for the write to land (it's older than the batch).
+      browser.onIdbPut = () => {
+        browser.onIdbPut = null
+        waiting = reader.read().then(({ value }) => void out.push(value as Uint8Array))
+      }
+      // The first chunk goes straight to the stream's queue, the next 1 MiB fills the batch.
+      for (const piece of chunk(data, 64 * KiB)) await writer.write(piece)
+      expect(await soon(() => waiting !== undefined)).toBe(true)
+      await waiting
+      let settled = false
+      const next = reader.read().then(({ value }) => {
+        out.push(value as Uint8Array)
+        settled = true
+      })
+      expect(await soon(() => settled)).toBe(true)
+      await next
+      vi.useRealTimers()
+      const rest = (async () => {
+        for (let r = await reader.read(); !r.done; r = await reader.read()) out.push(r.value)
+      })()
+      await writer.close()
+      await rest
+      expect(Buffer.concat(out).equals(data)).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+    await spool.closed
   })
 
   it("fails with SpoolLimitError on an IndexedDB QuotaExceededError with onLimit: 'error'", async () => {

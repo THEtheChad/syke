@@ -50,6 +50,8 @@ export interface FakeBrowser {
   idbPutFailures: number
   /** The error name failing `put()`s get. Defaults to `QuotaExceededError`. */
   idbPutError: string
+  /** Called as each IndexedDB `put()` is issued, while that write is in flight. */
+  onIdbPut: (() => void) | null
   /** OPFS `truncate()` calls. */
   truncates: number
   /** Makes OPFS `truncate()` throw a `DOMException` with this name. */
@@ -83,6 +85,7 @@ export function installFakeBrowser(options: FakeBrowserOptions = {}): FakeBrowse
     workersStarted: 0,
     idbPutFailures: 0,
     idbPutError: 'QuotaExceededError',
+    onIdbPut: null,
     truncates: 0,
     truncateError: null,
     workerPostFailures: 0,
@@ -135,6 +138,7 @@ type RawStore = { storeRecord: (...args: unknown[]) => unknown }
 const originalPut = FakeObjectStore.prototype.put
 FakeObjectStore.prototype.put = function (this: IDBObjectStore & { _rawObjectStore: RawStore }, ...args) {
   const browser = current
+  browser?.onIdbPut?.()
   if (!browser || browser.idbPutFailures <= 0) return originalPut.apply(this, args)
   browser.idbPutFailures--
   const raw = this._rawObjectStore
