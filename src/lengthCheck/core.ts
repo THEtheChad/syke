@@ -1,4 +1,4 @@
-import { byteLengthOf } from '../shared/bytes.ts'
+import { type ByteChunk, byteLengthOf } from '../shared/bytes.ts'
 import { SykeError } from '../shared/errors.ts'
 import type { Sink, Transformer } from '../shared/transformer.ts'
 import { nonNegativeInt } from '../shared/validate.ts'
@@ -25,7 +25,7 @@ export class LengthCheckError extends SykeError {
   }
 }
 
-export class LengthCheckCore implements Transformer<Uint8Array, Uint8Array> {
+export class LengthCheckCore<T extends ByteChunk = Uint8Array> implements Transformer<T, T> {
   bytes = 0
   readonly #expected: number | undefined
   readonly #min: number
@@ -46,7 +46,7 @@ export class LengthCheckCore implements Transformer<Uint8Array, Uint8Array> {
     }
   }
 
-  transform(chunk: Uint8Array, sink: Sink<Uint8Array>): void {
+  transform(chunk: T, sink: Sink<T>): void {
     // Any ArrayBuffer or view counts: only its byteLength is read.
     this.bytes += byteLengthOf('LengthCheck', chunk)
     // Fail before passing on the chunk that overruns, so it never reaches the consumer.

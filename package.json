@@ -59,11 +59,12 @@
   "scripts": {
     "build": "tsdown",
     "typecheck": "tsc --noEmit",
+    "typecheck:dist": "tsc -p test/consumer",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:browser": "pnpm build && node scripts/test-browser.mjs",
     "lint:package": "publint && attw --pack . --profile node16 && node scripts/check-web-bundle.mjs",
-    "check": "pnpm typecheck && pnpm test && pnpm build && pnpm lint:package",
+    "check": "pnpm typecheck && pnpm test && pnpm build && pnpm typecheck:dist && pnpm lint:package",
     "prepublishOnly": "pnpm check"
   },
   "devDependencies": {

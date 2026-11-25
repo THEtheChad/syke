@@ -88,6 +88,31 @@ export async function utilityTests({ test, check, equalBytes, concat, randomData
     check(JSON.stringify(out) === '["héllo","wörld","last"]', `got ${JSON.stringify(out)}`)
   })
 
+  await test('Lines and NdjsonParse decode shared memory', async () => {
+    // TextDecoder refuses shared memory in browsers. A SharedArrayBuffer needs a
+    // cross-origin isolated page; shared WebAssembly memory may be had without.
+    let shared
+    let from = 'SharedArrayBuffer'
+    if (globalThis.SharedArrayBuffer) shared = new SharedArrayBuffer(64)
+    else {
+      from = 'shared WebAssembly.Memory'
+      try {
+        shared = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }).buffer
+      } catch (error) {
+        return `skipped: no shared memory in this page (${error})`
+      }
+    }
+    const bytes = enc.encode('héllo\n{"a":1}\n')
+    new Uint8Array(shared).set(bytes)
+    const split = bytes.indexOf(0xc3) + 1 // inside the 2-byte 'é'
+    const views = [new Uint8Array(shared, 0, split), new DataView(shared, split, 6 - split)]
+    const lines = await through(views, new syke.Lines())
+    check(JSON.stringify(lines) === '["héllo"]', `Lines got ${JSON.stringify(lines)}`)
+    const records = await through([new Uint8Array(shared, 6, bytes.length - 6)], new syke.NdjsonParse())
+    check(JSON.stringify(records) === '[{"a":1}]', `NdjsonParse got ${JSON.stringify(records)}`)
+    return `views of a ${from}`
+  })
+
   await test('NdjsonStringify and NdjsonParse round-trip records', async () => {
     const records = [{ id: 1, name: 'a' }, [1, 2], 'text', 42]
     const out = await collect(

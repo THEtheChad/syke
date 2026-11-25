@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto'
+import { runInNewContext } from 'node:vm'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Meter as NodeMeter, type MeterStats } from '../../src/node.ts'
 import { Meter as WebMeter } from '../../src/web.ts'
@@ -84,6 +85,14 @@ describe.each(runtimes)('Meter (%s)', (runtime) => {
     expect(await run(meter, records)).toEqual(records)
     expect(meter.chunks).toBe(5)
     expect(meter.bytes).toBe(Buffer.byteLength('héllo €𝄞') + 3)
+  })
+
+  it('counts the bytes in any ArrayBuffer or view, from any realm', async () => {
+    const meter = new Meter<unknown>({ objectMode: true })
+    const foreign = runInNewContext('new ArrayBuffer(5)') as ArrayBuffer
+    const chunks = [new ArrayBuffer(4), new SharedArrayBuffer(3), new DataView(new ArrayBuffer(8), 1, 2), foreign]
+    expect(await run(meter, chunks)).toEqual(chunks)
+    expect(meter.bytes).toBe(4 + 3 + 2 + 5)
   })
 
   it('fails the stream if onProgress throws', async () => {

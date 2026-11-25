@@ -1,4 +1,4 @@
-import { asUint8Array, byteLengthOf, type ByteSource } from '../shared/bytes.ts'
+import { asUint8Array, byteLengthOf, type ByteChunk } from '../shared/bytes.ts'
 import { SykeError } from '../shared/errors.ts'
 import type { Sink, Transformer } from '../shared/transformer.ts'
 import { nonNegativeInt, oneOf } from '../shared/validate.ts'
@@ -84,7 +84,7 @@ export class CapCore<T> implements Transformer<T, T> {
       this.bytes += room
       this.items++
       // Cut in bytes, not elements: a chunk that isn't a Uint8Array gives a Uint8Array view of its first bytes.
-      sink.push(asUint8Array(chunk as ByteSource).subarray(0, room) as T)
+      sink.push(asUint8Array(chunk as ByteChunk).subarray(0, room) as T)
     }
     this.#overrun(sink)
   }

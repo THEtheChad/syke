@@ -3,7 +3,17 @@ import { describe, expect, it } from 'vitest'
 import { peek as nodePeek } from '../../src/node.ts'
 import { peek as webPeek } from '../../src/web.ts'
 import { chunk, pick, runtimes } from '../harness.ts'
-import { collect, collectSettled, probe, reader, readUpTo, settle } from '../streamHarness.ts'
+import {
+  collect,
+  collectSettled,
+  endedSource,
+  endedSourceKinds,
+  probe,
+  reader,
+  readUpTo,
+  settle,
+  staysOpenAtEnd,
+} from '../streamHarness.ts'
 
 const data = Uint8Array.from({ length: 100 }, (_, i) => i)
 const join = (chunks: Uint8Array[]) => Buffer.concat(chunks)
@@ -146,5 +156,31 @@ describe('peek (node)', () => {
     expect(error).toBeInstanceOf(TypeError)
     expect(error.message).toMatch(/syke: a source produced null/)
     expect(error.code).toBe('ERR_STREAM_NULL_VALUES')
+  })
+
+  describe.each(endedSourceKinds)('with a %s that has ended', (kind) => {
+    // Some Node releases destroy a half-open Duplex themselves at its end.
+    const test = it.skipIf(!staysOpenAtEnd[kind])
+
+    test('leaves it undestroyed when the stream is destroyed after peeking past its end', async () => {
+      const source = endedSource(kind)
+      const { head, stream } = await nodePeek(source.stream, 10)
+      expect([...head]).toEqual([1, 2])
+      expect(source.stream.readableEnded).toBe(true)
+      stream.destroy()
+      await settle()
+      expect(source.alive()).toBe(true)
+      source.stream.destroy()
+    })
+
+    test('leaves it undestroyed when the stream is destroyed with an error mid-replay', async () => {
+      const source = endedSource(kind)
+      const { stream } = await nodePeek(source.stream, 10)
+      stream.on('error', () => {})
+      stream.destroy(new Error('consumer gave up'))
+      await settle()
+      expect(source.alive()).toBe(true)
+      source.stream.destroy()
+    })
   })
 })

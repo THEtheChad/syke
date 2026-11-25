@@ -37,7 +37,9 @@ Built on [`Lines`](lines.md): lines split on `\n` with a trailing `\r`
 stripped, a final line without a newline is parsed, and a multi-byte character
 split across chunks decodes correctly. Blank lines (empty, or only spaces,
 tabs and `\r`) are skipped. Both `syke/node` and `syke/web` also accept string
-chunks, and in `syke/node` the output side is in object mode.
+chunks, and in `syke/node` the output side is in object mode. In `syke/web`
+bytes can be any `ByteChunk`, as for `Lines`: the web `NdjsonParse<T>` is a
+`TransformStream<ByteChunk | string, T>`.
 
 | Option | Default | Description |
 | ------ | ------- | ----------- |

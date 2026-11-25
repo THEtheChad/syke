@@ -1,3 +1,4 @@
+import type { ByteChunk } from '../shared/bytes.ts'
 import { CoreTransformStream } from '../shared/web.ts'
 import {
   NdjsonParseCore,
@@ -7,11 +8,11 @@ import {
 } from './core.ts'
 
 /**
- * Parses newline-delimited JSON: takes UTF-8 bytes (or strings) and emits one value per
- * line, skipping blank lines. Invalid JSON, or a top-level `null`, fails the
+ * Parses newline-delimited JSON: takes UTF-8 bytes (any `ByteChunk`) or
+ * strings and emits one value per line, skipping blank lines. Invalid JSON, or a top-level `null`, fails the
  * stream with an `NdjsonParseError`.
  */
-export class NdjsonParse<T = unknown> extends CoreTransformStream<Uint8Array | string, T> {
+export class NdjsonParse<T = unknown> extends CoreTransformStream<ByteChunk | string, T> {
   constructor(options: NdjsonParseOptions = {}) {
     super(new NdjsonParseCore<T>(options))
   }

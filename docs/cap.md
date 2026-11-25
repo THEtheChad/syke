@@ -80,6 +80,8 @@ untouched. Anything else fails the stream with a `TypeError`.
   view, not a copy) and ends the output normally. The cut is in bytes, so the
   part of a chunk that isn't a `Uint8Array` (an `ArrayBuffer`, `DataView`,
   `Uint16Array`, ...) comes out as a `Uint8Array` view of its first bytes.
+  `Cap<T>`'s output is typed as `T`, so for such chunks name both types:
+  `new Cap<ArrayBuffer | Uint8Array>({ maxBytes, onLimit: 'truncate' })`.
 
 After truncating, the two runtimes treat the rest of the source differently:
 

@@ -1,9 +1,9 @@
 import { ReadableStream as NodeReadableStream } from 'node:stream/web'
 import { runInNewContext } from 'node:vm'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { LineSplitter } from '../../src/lines/core.ts'
 import { LineTooLongError, Lines as NodeLines } from '../../src/node.ts'
-import { LineTooLongError as WebLineTooLongError, Lines as WebLines } from '../../src/web.ts'
+import { NdjsonParse as WebNdjsonParse, LineTooLongError as WebLineTooLongError, Lines as WebLines } from '../../src/web.ts'
 import { chunk, pick, run, runSettled, runtimes } from '../harness.ts'
 
 const encode = (text: string) => new TextEncoder().encode(text)
@@ -150,6 +150,48 @@ describe('Lines (web)', () => {
     expect(await run(new WebLines(), [encode('ab\n').buffer, shared, foreign])).toEqual(['ab', 'cd', 'ef'])
   })
 
+  describe('with a TextDecoder that refuses shared memory, as browsers do', () => {
+    // Chrome, Edge and Firefox throw on a SharedArrayBuffer or a view of one; Node doesn't.
+    class BrowserTextDecoder extends TextDecoder {
+      override decode(input?: AllowSharedBufferSource, options?: TextDecodeOptions): string {
+        const buffer = input && ArrayBuffer.isView(input) ? input.buffer : input
+        if (Object.prototype.toString.call(buffer) === '[object SharedArrayBuffer]') {
+          throw new TypeError("Failed to execute 'decode' on 'TextDecoder': The provided ArrayBufferView value must not be shared.")
+        }
+        return super.decode(input, options)
+      }
+    }
+    beforeEach(() => {
+      vi.stubGlobal('TextDecoder', BrowserTextDecoder)
+    })
+    afterEach(() => {
+      vi.unstubAllGlobals()
+    })
+
+    const sharedBytes = (text: string) => {
+      const bytes = encode(text)
+      const shared = new SharedArrayBuffer(bytes.length + 2)
+      new Uint8Array(shared).set(bytes, 1)
+      return { shared, view: new Uint8Array(shared, 1, bytes.length) }
+    }
+
+    it('decodes SharedArrayBuffer chunks and views of one', async () => {
+      // 'é' is split across the last two chunks.
+      const { shared, view } = sharedBytes('ab\ncd\nhé\n')
+      const whole = new SharedArrayBuffer(3)
+      new Uint8Array(whole).set(encode('xy\n'))
+      const foreign = runInNewContext('new SharedArrayBuffer(3)') as SharedArrayBuffer
+      new Uint8Array(foreign).set(encode('zz\n'))
+      const input = [view.subarray(0, 3), new DataView(shared, 4, 3), view.subarray(6, 8), view.subarray(8), whole, foreign]
+      expect(await run(new WebLines(), input)).toEqual(['ab', 'cd', 'hé', 'xy', 'zz'])
+    })
+
+    it('decodes shared NDJSON bytes', async () => {
+      const { view } = sharedBytes('{"a":1}\n')
+      expect(await run(new WebNdjsonParse(), [view])).toEqual([{ a: 1 }])
+    })
+  })
+
   it('types its input to accept a TextDecoderStream (lib.dom)', () => {
     // Compile-time check: this only type-checks if the input side takes strings.
     const pipe = (text: ReadableStream<string>) => text.pipeThrough(new WebLines())
@@ -172,7 +214,7 @@ describe('Lines (web)', () => {
   ])('fails with a TypeError on %s', async (_, bad) => {
     const { error } = await runSettled(new WebLines(), [encode('a\n'), bad])
     expect(error).toBeInstanceOf(TypeError)
-    expect(error.message).toMatch(/^syke: expected Uint8Array or string chunks, got /)
+    expect(error.message).toMatch(/^syke: expected byte chunks \(an ArrayBuffer or a view of one\) or strings, got /)
   })
 })
 
