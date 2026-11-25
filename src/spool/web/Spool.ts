@@ -74,6 +74,8 @@ export type SpoolSource<T = Uint8Array> = ReadableStream<T> | Iterable<T> | Asyn
  */
 const BATCH_BYTES = 1024 * 1024
 const DEFAULT_CHUNK_SIZE = 64 * 1024
+/** Most a chunk read back may pin of its buffer, as a multiple of its own size, before it's copied. */
+const PIN_RATIO = 16
 /** How often to recheck the storage quota while waiting on `minFreeSpace`. */
 const FREE_SPACE_POLL_MS = 250
 
@@ -510,9 +512,11 @@ export class Spool<T = Uint8Array> implements ReadableWritablePair<T, T> {
     }
     for (let offset = 0; offset < bytes.byteLength; offset += this.#chunkSize) {
       const piece = bytes.subarray(offset, offset + this.#chunkSize)
-      // A small chunk of a large buffer (an IndexedDB record, the batch) gets
-      // its own copy, so a consumer keeping it doesn't keep the whole buffer.
-      this.#out.push(piece.byteLength * 2 < piece.buffer.byteLength ? piece.slice() : piece)
+      // A chunk much smaller than its buffer (a short batch in a large one, a
+      // small chunkSize of a 1 MiB IndexedDB record) gets its own copy, so a
+      // consumer keeping it keeps at most PIN_RATIO times its size. Default
+      // 64 KiB chunks of a 1 MiB record share it.
+      this.#out.push(piece.byteLength * PIN_RATIO < piece.buffer.byteLength ? piece.slice() : piece)
     }
   }
 

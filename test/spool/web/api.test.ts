@@ -307,7 +307,22 @@ describe('chunk handling', () => {
     await writer.close()
     const out = await readAll(spool.readable)
     expect(Buffer.concat(out).equals(data)).toBe(true)
-    for (const piece of out.slice(1)) expect(piece.buffer.byteLength).toBeLessThanOrEqual(2 * piece.byteLength)
+    for (const piece of out.slice(1)) expect(piece.buffer.byteLength).toBeLessThanOrEqual(16 * piece.byteLength)
+  })
+
+  it('does not copy default-size chunks of IndexedDB records', async () => {
+    installFakeBrowser()
+    const { Spool } = await freshPage()
+    const data = randomBytes(3 * MiB)
+    const spool = new Spool({ storage: 'indexeddb' })
+    const writer = spool.writable.getWriter()
+    for (const piece of chunk(data, 64 * KiB)) await writer.write(piece)
+    await writer.close()
+    const out = await readAll(spool.readable)
+    expect(Buffer.concat(out).equals(data)).toBe(true)
+    // Read back as 1 MiB records, delivered as views of them.
+    const shared = out.slice(1).filter((piece) => piece.buffer.byteLength === MiB)
+    expect(shared.length).toBeGreaterThan(16)
   })
 })
 
