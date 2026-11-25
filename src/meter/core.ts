@@ -1,3 +1,4 @@
+import { isByteChunk } from '../shared/bytes.ts'
 import type { Sink, Transformer } from '../shared/transformer.ts'
 
 /** A snapshot of a `Meter`'s counters. */
@@ -105,7 +106,8 @@ function perSecond(count: number, elapsedMs: number): number {
 }
 
 function byteLength(chunk: unknown): number {
-  if (ArrayBuffer.isView(chunk) || chunk instanceof ArrayBuffer) return chunk.byteLength
+  // Any ArrayBuffer, SharedArrayBuffer or view, from any realm, as LengthCheck counts them.
+  if (isByteChunk(chunk)) return chunk.byteLength
   if (typeof chunk === 'string') return utf8Length(chunk)
   return 0
 }

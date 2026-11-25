@@ -43,9 +43,15 @@ All optional.
 `meter.chunksPerSecond` can be read at any time. `meter.stats` returns all five
 as one `MeterStats` object, the same shape `onProgress` gets.
 
-- `bytes` counts byte chunks (`Uint8Array` and other `ArrayBuffer` views, and
-  `ArrayBuffer`s) and strings, as their UTF-8 length. Other records count
-  towards `chunks` only.
+- `bytes` counts byte chunks and strings, as their UTF-8 length. Other
+  records count towards `chunks` only. A byte chunk is a `Uint8Array` or any
+  other view (`DataView`, `Uint16Array`, ...), an `ArrayBuffer` or a
+  `SharedArrayBuffer`, including one from another realm (an iframe, a `vm`
+  context). A bare `SharedArrayBuffer` is only recognised where this realm has
+  a `SharedArrayBuffer` global (in browsers, a cross-origin isolated page);
+  views of one always are. In `syke/node` only an `objectMode: true` stream
+  passes bare buffers on: a byte-mode stream turns views into `Buffer`s and
+  rejects a bare `ArrayBuffer` or `SharedArrayBuffer` itself.
 - `elapsedMs` runs from the first chunk, not from construction, so time spent
   waiting for a slow server to respond doesn't drag the average down. It stops
   when the stream ends, errors or is destroyed, so the rates stay put
