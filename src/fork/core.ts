@@ -59,15 +59,22 @@ export class ForkCore<T> {
     this.#reading = true
     this.#source.next().then(
       (result) => {
-        this.#reading = false
-        if (this.#finished) return
-        if (result.done) this.#finished = true
-        for (const branch of this.#branches) {
-          if (!branch.live) continue
-          if (result.done) branch.outlet?.end()
-          else branch.outlet?.push(result.value)
-          this.#release(branch)
+        // Still `#reading` while handing the chunk out: a branch that cancels
+        // as it gets it (a Node branch given null does) mustn't start the next
+        // read while the branches after it still hold this one.
+        try {
+          if (this.#finished) return
+          if (result.done) this.#finished = true
+          for (const branch of this.#branches) {
+            if (!branch.live) continue
+            if (result.done) branch.outlet?.end()
+            else branch.outlet?.push(result.value)
+            this.#release(branch)
+          }
+        } finally {
+          this.#reading = false
         }
+        this.#maybeRead()
       },
       (error) => this.#fail(error),
     )

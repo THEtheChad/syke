@@ -376,6 +376,23 @@ describe('fork (node)', () => {
     expect(source.returned).toBe(true)
   })
 
+  it('reads nothing past a null chunk', async () => {
+    let reads = 0
+    const source = {
+      [Symbol.iterator]: () => ({
+        next: () => {
+          reads++
+          return { done: false, value: reads === 3 ? null : reads }
+        },
+      }),
+    }
+    const [a, b, c] = nodeFork(source, { count: 3 })
+    const results = await Promise.all([collectSettled(a), collectSettled(b), collectSettled(c)])
+    for (const result of results) expect(result.error?.code).toBe('ERR_STREAM_NULL_VALUES')
+    await settle()
+    expect(reads).toBe(3)
+  })
+
   it('errors the branches with an Error when the source fails with a falsy value', async () => {
     async function* failing() {
       yield 1
