@@ -32,13 +32,13 @@ describe('parseMinFreeSpace()', () => {
     expect(() => parseMinFreeSpace(value as never)).toThrow(/^syke: minFreeSpace must be/)
   })
 
-  it.each([true, null, undefined, {}, [], 10n])('rejects a non-string, non-number %o with a TypeError', (value) => {
-    expect(() => parseMinFreeSpace(value as never)).toThrow(TypeError)
+  it.each([true, null, undefined, {}, [], 10n])('rejects a non-string, non-number %o with a RangeError', (value) => {
+    expect(() => parseMinFreeSpace(value as never)).toThrow(RangeError)
     expect(() => parseMinFreeSpace(value as never)).toThrow(/^syke: minFreeSpace must be/)
   })
 
   it('does not coerce objects that stringify to a percentage', () => {
-    expect(() => parseMinFreeSpace({ toString: () => '10%' } as never)).toThrow(TypeError)
+    expect(() => parseMinFreeSpace({ toString: () => '10%' } as never)).toThrow(RangeError)
   })
 })
 

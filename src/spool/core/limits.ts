@@ -31,8 +31,10 @@ export function parseMinFreeSpace(value: MinFreeSpace): FreeSpaceFloor {
     return { bytes: value }
   }
 
+  // Not coerced: an object that stringifies to '10%' is a mistake. A
+  // RangeError, as in 0.1.0 and the other option checks.
   if (typeof value !== 'string') {
-    throw new TypeError(
+    throw new RangeError(
       `syke: minFreeSpace must be a non-negative integer of bytes, a percentage like '10%', or false, got ${String(value)}`,
     )
   }
