@@ -116,8 +116,18 @@ describe('LengthCheck (web)', () => {
 
 describe('LengthCheck (node)', () => {
   it('leaves a bare ArrayBuffer to Node, whose byte-mode streams reject it', async () => {
-    const { error } = await runSettled(new NodeLengthCheck({ max: 100 }), [new ArrayBuffer(4)])
+    const check = new NodeLengthCheck({ max: 100 })
+    // Node 22 throws from write(); Node 24 and later fail the stream instead.
+    const error = await new Promise((resolve) => {
+      check.once('error', resolve)
+      try {
+        check.write(new ArrayBuffer(4))
+      } catch (thrown) {
+        resolve(thrown)
+      }
+    })
     expect(error).toMatchObject({ code: 'ERR_INVALID_ARG_TYPE' })
+    expect(check.bytes).toBe(0)
   })
 
   it('accepts strings, counted as UTF-8 bytes', async () => {
