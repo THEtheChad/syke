@@ -109,9 +109,11 @@ describe('the spool database connection', () => {
     const second = await idb.openDb()
     expect(second).not.toBe(first)
     expect(isOpen(second)).toBe(true)
-    // Releasing the dead connection leaves the new one alone.
+    // Releasing the dead connection leaves the new one alone, still shared.
     idb.closeDb(first)
     expect(isOpen(second)).toBe(true)
+    expect(await idb.openDb()).toBe(second)
+    idb.closeDb(second)
     idb.closeDb(second)
     expect(isOpen(second)).toBe(false)
   })
@@ -216,5 +218,30 @@ describe('IndexedDB reads and the quota budget', () => {
     vi.setSystemTime(1000)
     expect(await quota.storageBudget(floor)).toBe(10 * MiB)
     await store.close()
+  })
+})
+
+describe('the OPFS worker queue', () => {
+  it('keeps serving requests after a reply that could not be sent at all', async () => {
+    const browser = installFakeBrowser()
+    vi.resetModules()
+    const { OpfsStore } = await import('../../../src/spool/web/opfs.ts')
+    const first = await OpfsStore.open('first', 64 * 1024, Number.POSITIVE_INFINITY, () => {})
+    // Both the reply and the error reported in its place fail to send: this
+    // request is never answered (until the worker is terminated).
+    browser.workerPostFailures = 2
+    const lost = OpfsStore.open('lost', 64 * 1024, Number.POSITIVE_INFINITY, () => {})
+    lost.catch(() => {})
+    await waitFor(() => browser.workerPostFailures === 0)
+    // Later requests, from any spool on the page, still run.
+    const next = await Promise.race([
+      OpfsStore.open('next', 64 * 1024, Number.POSITIVE_INFINITY, () => {}),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('the worker stopped answering')), 1000)),
+    ])
+    expect(next.room(1024, 1024, true)).toBe(1024)
+    await next.write(new Uint8Array(1024))
+    expect(await next.read()).toEqual([new Uint8Array(1024)])
+    await next.close()
+    await first.close()
   })
 })

@@ -63,6 +63,8 @@ export interface FakeBrowser {
   releaseReplies(): void
   /** How many replies are held. */
   readonly heldReplies: number
+  /** How many coming `postMessage()` calls inside the worker throw `DataCloneError`. */
+  workerPostFailures: number
 }
 
 let current: FakeBrowser | null = null
@@ -83,6 +85,7 @@ export function installFakeBrowser(options: FakeBrowserOptions = {}): FakeBrowse
     idbPutError: 'QuotaExceededError',
     truncates: 0,
     truncateError: null,
+    workerPostFailures: 0,
     holdReplies: new Set(),
     releaseReplies: () => {
       for (const deliver of held.splice(0)) deliver()
@@ -354,6 +357,10 @@ export class FakeWorker extends EventTarget {
       onmessage: null as ((event: { data: unknown }) => void) | null,
       postMessage: (data: unknown, transfer: Transferable[] = []) => {
         if (this.#terminated) return
+        if (browser.workerPostFailures > 0) {
+          browser.workerPostFailures--
+          throw new DOMException('could not clone the reply', 'DataCloneError')
+        }
         const copy = structuredClone(data, { transfer: transfer as never[] })
         const id = (data as { id?: number }).id
         const op = id === undefined ? undefined : this.#ops.get(id)
