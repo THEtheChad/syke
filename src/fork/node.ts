@@ -48,7 +48,8 @@ export function fork(source: StreamSource, options: ForkOptions = {}): Readable[
 /**
  * Pipes `branch` into `through`, tying their lifetimes together: an error in
  * `branch` destroys `through` with it, and `through` ending or being
- * destroyed destroys `branch` (detaching it from the fork).
+ * destroyed destroys `branch` (detaching it from the fork), with the same
+ * error if it had one.
  *
  * Unlike `pipeline()`, this adds no `'error'` listener of its own to
  * `through`, so its errors reach the caller as they would from any stream:
@@ -59,7 +60,10 @@ function connect(branch: Readable, through: Duplex): void {
   branch.on('error', (error) => through.destroy(error))
   branch.pipe(through)
   finished(through, { error: false }, () => {
-    if (!branch.destroyed) branch.destroy()
+    // Pass on why `through` was destroyed, so a source cancelled because of it
+    // gets the reason. Not finished()'s own error: a plain destroy() isn't a
+    // failure.
+    if (!branch.destroyed) branch.destroy(through.errored ?? undefined)
   })
 }
 

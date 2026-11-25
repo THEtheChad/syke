@@ -204,7 +204,10 @@ describe.each(runtimes)('fork (%s)', (runtime) => {
     expect(made.map((m) => m.state.released)).toEqual([true, true])
   })
 
-  it('forwards the last branch\'s cancel reason to the source', async () => {
+  it.each([
+    ['', undefined],
+    [', through a buffer', roomy(4)],
+  ])('forwards the last branch\'s cancel reason to the source%s', async (_, buffer) => {
     const reasons: unknown[] = []
     let i = 0
     const source = new ReadableStream({
@@ -215,7 +218,7 @@ describe.each(runtimes)('fork (%s)', (runtime) => {
         reasons.push(reason)
       },
     })
-    const [a, b] = fork(source)
+    const [a, b] = fork(source, { buffer })
     const readerA = reader(a)
     const readerB = reader(b)
     await Promise.all([readUpTo(readerA, 1), readUpTo(readerB, 1)])
