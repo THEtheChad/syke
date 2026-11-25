@@ -161,6 +161,7 @@ describe('merge (node)', () => {
     const { error } = await collectSettled(nodeMerge([bad, other]))
     expect(error).toBeInstanceOf(TypeError)
     expect(error.message).toMatch(/syke: a source produced null/)
+    expect(error.code).toBe('ERR_STREAM_NULL_VALUES')
     await settle()
     expect(bad.returned).toBe(true)
     expect(other.returned).toBe(true)

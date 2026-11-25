@@ -55,7 +55,8 @@ Each source is read only as fast as the output is consumed.
   along with any sources from the array that are still waiting, and stops a
   generator of sources (`return()`).
 - In `syke/node`, a source yielding `null` errors the output with a `TypeError`
-  (Node streams treat `null` as end-of-stream) instead of ending early.
+  whose `code` is `'ERR_STREAM_NULL_VALUES'` (Node streams treat `null` as
+  end-of-stream). Before 0.1.1, the output silently ended there instead.
 - A non-iterable `sources`, or an invalid source directly in an array
   (including a locked `ReadableStream`), throws a `TypeError` from `concat()`.
   When `concat()` throws, it leaves every source as it found it: none is read,

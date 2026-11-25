@@ -235,6 +235,7 @@ describe('concat (node)', () => {
     expect(output).toEqual([0, 1])
     expect(error).toBeInstanceOf(TypeError)
     expect(error.message).toMatch(/syke: a source produced null/)
+    expect(error.code).toBe('ERR_STREAM_NULL_VALUES')
     await settle()
     expect(source.returned).toBe(true)
   })

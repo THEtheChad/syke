@@ -96,7 +96,7 @@ export function toReadable<T>(producer: Producer<T>, options: OutputOptions): Re
       if (chunk === null) {
         // push(null) would end the output early, silently dropping the rest.
         // Destroying (not outlet.error) also cancels the producer.
-        readable.destroy(new TypeError('syke: a source produced null, which a Node stream cannot carry'))
+        readable.destroy(nullChunkError())
         return
       }
       readable.push(chunk)
@@ -131,6 +131,12 @@ export function toReadable<T>(producer: Producer<T>, options: OutputOptions): Re
 
   producer.start(outlet)
   return readable
+}
+
+/** The error for a `null` chunk, with the `code` Node itself gives `write(null)`. */
+function nullChunkError(): TypeError {
+  const error = new TypeError('syke: a source produced null, which a Node stream cannot carry')
+  return Object.assign(error, { code: 'ERR_STREAM_NULL_VALUES' })
 }
 
 /**

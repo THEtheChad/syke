@@ -366,6 +366,7 @@ describe('fork (node)', () => {
     for (const result of [resultA, resultB]) {
       expect(result.error).toBeInstanceOf(TypeError)
       expect(result.error.message).toMatch(/syke: a source produced null/)
+      expect(result.error.code).toBe('ERR_STREAM_NULL_VALUES')
       expect(result.output).toEqual([0, 1])
     }
     await settle()

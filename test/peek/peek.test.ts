@@ -145,5 +145,6 @@ describe('peek (node)', () => {
     expect(output).toHaveLength(1)
     expect(error).toBeInstanceOf(TypeError)
     expect(error.message).toMatch(/syke: a source produced null/)
+    expect(error.code).toBe('ERR_STREAM_NULL_VALUES')
   })
 })
