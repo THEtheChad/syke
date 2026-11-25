@@ -36,11 +36,12 @@ export function isUint8Array(value: unknown): value is Uint8Array {
 }
 
 /**
- * Bytes in any of the forms the platform hands them out: an `ArrayBuffer` (or
- * `SharedArrayBuffer`) or any view of one (`Uint8Array`, `Buffer`, `DataView`,
- * other typed arrays). What utilities that only count bytes accept.
+ * A chunk of bytes in any of the forms the platform hands them out: an
+ * `ArrayBuffer`, a `SharedArrayBuffer` or any view of one (`Uint8Array`,
+ * `Buffer`, `DataView`, other typed arrays). What the web utilities that only
+ * count or decode bytes (`LengthCheck`, `Lines`, `NdjsonParse`) accept.
  */
-export type ByteSource = ArrayBufferView | ArrayBufferLike
+export type ByteChunk = ArrayBufferLike | ArrayBufferView
 
 // The byteLength getters check for the real internal slot, so they tell a
 // buffer from another realm apart from an object that only looks like one.
@@ -48,12 +49,12 @@ const bufferByteLength = byteLengthGetter(globalThis.ArrayBuffer)
 const sharedByteLength = byteLengthGetter(globalThis.SharedArrayBuffer)
 
 /** True for an `ArrayBuffer`, `SharedArrayBuffer` or any view of one, even from another realm. */
-export function isByteSource(value: unknown): value is ByteSource {
+export function isByteChunk(value: unknown): value is ByteChunk {
   return ArrayBuffer.isView(value) || isBuffer(value, bufferByteLength) || isBuffer(value, sharedByteLength)
 }
 
 /** A `Uint8Array` over the same bytes as `source`: `source` itself if it is one, otherwise a view, not a copy. */
-export function asUint8Array(source: ByteSource): Uint8Array {
+export function asUint8Array(source: ByteChunk): Uint8Array {
   if (isUint8Array(source)) return source
   if (ArrayBuffer.isView(source)) return new Uint8Array(source.buffer, source.byteOffset, source.byteLength)
   return new Uint8Array(source)
@@ -61,7 +62,7 @@ export function asUint8Array(source: ByteSource): Uint8Array {
 
 /** The size of a chunk in bytes, failing a byte-counting utility with a clear `TypeError` when it isn't bytes. */
 export function byteLengthOf(utility: string, chunk: unknown): number {
-  if (!isByteSource(chunk)) {
+  if (!isByteChunk(chunk)) {
     throw new TypeError(`syke: ${utility} takes byte chunks (an ArrayBuffer or a view of one), got ${describeChunk(chunk)}`)
   }
   return chunk.byteLength
@@ -80,7 +81,7 @@ export function assertUint8Array(utility: string, chunk: unknown): asserts chunk
 
 export function describeChunk(chunk: unknown): string {
   if (chunk === null) return 'null'
-  if (isByteSource(chunk)) return Object.prototype.toString.call(chunk).slice(8, -1)
+  if (isByteChunk(chunk)) return Object.prototype.toString.call(chunk).slice(8, -1)
   if (typeof chunk === 'object') return (chunk as object).constructor?.name ?? 'object'
   return typeof chunk
 }

@@ -1,0 +1,15 @@
+{
+  // A consumer's view of the package: these files import @thethechad/syke/web
+  // by name, which resolves (through package.json "exports") to dist/.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": [],
+    "strict": true,
+    "skipLibCheck": false,
+    "noEmit": true
+  },
+  "include": ["*.ts"]
+}

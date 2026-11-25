@@ -1,4 +1,4 @@
-import { describeChunk, isByteSource } from '../shared/bytes.ts'
+import { describeChunk, isByteChunk } from '../shared/bytes.ts'
 import { SykeError } from '../shared/errors.ts'
 import type { Sink, Transformer } from '../shared/transformer.ts'
 
@@ -66,7 +66,7 @@ export class LineSplitter {
     let text: string
     // A string arriving mid-character ends that character (as U+FFFD) first.
     if (typeof chunk === 'string') text = this.#decoder.decode() + chunk
-    else if (isByteSource(chunk)) text = this.#decoder.decode(chunk, { stream: true })
+    else if (isByteChunk(chunk)) text = this.#decoder.decode(chunk, { stream: true })
     else throw new TypeError(`syke: expected Uint8Array or string chunks, got ${describeChunk(chunk)}`)
     this.#split(this.#text(text), onLine)
   }
