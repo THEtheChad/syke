@@ -192,9 +192,12 @@ Two limits keep the spool file from filling the disk:
 - **`minFreeSpace`** (default `'10%'`) checks the filesystem's free space
   whenever the spool file is about to grow, and won't grow it past the floor.
   Readings are cached briefly (100 ms) per directory, with in-process growth
-  counted in between, so many parallel spools share the same floor without
-  oversubscribing the disk. If free space can't be read on a platform, the floor
-  isn't enforced.
+  counted in between, so parallel spools share one floor rather than each
+  spending the same free space. The check isn't atomic: spools that read the
+  budget at the same moment can each grow their file by one more write, so the
+  floor can be overshot by about one write per spool: usually about `chunkSize`,
+  more when a single chunk written to the spool is larger. Other processes writing to the filesystem are only seen at the next
+  reading. If free space can't be read on a platform, the floor isn't enforced.
 - **`maxDiskBytes`** caps the size of one stream's spool file.
 - **`ENOSPC` / `EDQUOT`** from the OS is also treated as hitting a disk limit.
 
@@ -221,7 +224,9 @@ new Spool({ maxDiskBytes: 2 * 1024 ** 3, minFreeSpace: '20%', onLimit: 'error' }
 On some Linux systems `/tmp` is a `tmpfs`, which lives in RAM, so spooling "to
 disk" there still uses memory. The first time a spool writes into a tmpfs or
 ramfs directory, it emits a process warning (`code: 'SYKE_SPOOL_TMPFS'`). Pass a
-`dir` on a real disk to fix it.
+`dir` on a real disk to fix it. The check is remembered for the 64 most recently
+used directories, so a process cycling through more than that may warn about a
+directory again.
 
 ## Cleanup on exit
 
