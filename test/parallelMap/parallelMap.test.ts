@@ -335,7 +335,9 @@ describe.each(runtimes)('ParallelMap (%s)', (runtime) => {
     expect(() => new ParallelMap(undefined, { concurrency: 1 })).toThrow(TypeError)
     expect(() => new ParallelMap(fn, { concurrency: 0 })).toThrow(RangeError)
     expect(() => new ParallelMap(fn, { concurrency: 1.5 })).toThrow(RangeError)
-    expect(() => new ParallelMap(fn, { concurrency: 2 ** 53 })).toThrow(RangeError)
+    expect(() => new ParallelMap(fn, { concurrency: Number.POSITIVE_INFINITY })).toThrow(RangeError)
+    // A concurrency past 2^53 is as good as unlimited.
+    expect(() => new ParallelMap(fn, { concurrency: 2 ** 53 })).not.toThrow()
     // @ts-expect-error not a boolean
     expect(() => new ParallelMap(fn, { concurrency: 1, ordered: 'no' })).toThrow(TypeError)
   })

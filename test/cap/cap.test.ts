@@ -70,6 +70,12 @@ describe.each(runtimes)('Cap (%s)', (runtime) => {
     await expect(run(new Cap({ maxBytes: 100 }), failing())).rejects.toThrow('boom')
   })
 
+  it.each([2 ** 53, 2 ** 60, Number.MAX_VALUE])('takes maxBytes: %d as unlimited', async (maxBytes) => {
+    const cap = new Cap({ maxBytes })
+    expect((await runBytes(cap, chunk(data, 999))).equals(data)).toBe(true)
+    expect(cap).toMatchObject({ bytes: data.length, truncated: false })
+  })
+
   it('rejects invalid options', () => {
     // @ts-expect-error neither given
     expect(() => new Cap({})).toThrow(TypeError)
@@ -77,6 +83,7 @@ describe.each(runtimes)('Cap (%s)', (runtime) => {
     expect(() => new Cap({ maxBytes: 1, maxItems: 1 })).toThrow(TypeError)
     expect(() => new Cap({ maxBytes: -1 })).toThrow(RangeError)
     expect(() => new Cap({ maxItems: 1.5 })).toThrow(RangeError)
+    expect(() => new Cap({ maxBytes: Number.POSITIVE_INFINITY })).toThrow(RangeError)
     // @ts-expect-error not an action
     expect(() => new Cap({ maxBytes: 1, onLimit: 'drop' })).toThrow(/onLimit must be 'error' or 'truncate'/)
   })

@@ -37,6 +37,10 @@ At least one is required.
 | `min` | Fewest bytes allowed. |
 | `max` | Most bytes allowed. |
 
+Each is a non-negative integer. One of 2^53 or more can't be reached, so it
+works as no limit; `Infinity`, a fraction or a negative number throws a
+`RangeError`.
+
 `syke/node` also takes `highWaterMark` and `signal`, passed to `stream.Transform`.
 
 `check.bytes` holds the number of bytes that have passed so far.

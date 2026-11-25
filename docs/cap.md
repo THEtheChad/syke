@@ -52,6 +52,10 @@ Exactly one of `maxBytes` and `maxItems` is required.
 | `maxItems` | Most chunks to pass on. In `syke/node` this puts the stream in object mode and counts records; in `syke/web` it counts chunks of any type. |
 | `onLimit` | `'error'` (default) or `'truncate'`. |
 
+`maxBytes` and `maxItems` are non-negative integers. One of 2^53 or more
+can't be reached, so it works as no limit; `Infinity`, a fraction or a
+negative number throws a `RangeError`.
+
 `syke/node` also takes `highWaterMark` and `signal`, passed to `stream.Transform`.
 
 `cap.bytes` and `cap.items` count what has been passed on, and

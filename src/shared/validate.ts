@@ -1,15 +1,22 @@
+/**
+ * A positive integer. One of 2^53 or more stops being exact, but no count ever
+ * gets that far, so it means "unlimited" and comes back as
+ * `Number.MAX_SAFE_INTEGER`, which keeps comparisons and subtraction exact.
+ * `Infinity` is not an integer and is rejected.
+ */
 export function positiveInt(name: string, value: number): number {
-  if (!Number.isSafeInteger(value) || value <= 0) {
+  if (!Number.isInteger(value) || value <= 0) {
     throw new RangeError(`syke: ${name} must be a positive integer, got ${value}`)
   }
-  return value
+  return Math.min(value, Number.MAX_SAFE_INTEGER)
 }
 
+/** A non-negative integer, with large values clamped as in `positiveInt`. */
 export function nonNegativeInt(name: string, value: number): number {
-  if (!Number.isSafeInteger(value) || value < 0) {
+  if (!Number.isInteger(value) || value < 0) {
     throw new RangeError(`syke: ${name} must be a non-negative integer, got ${value}`)
   }
-  return value
+  return Math.min(value, Number.MAX_SAFE_INTEGER)
 }
 
 export function positiveNumber(name: string, value: number): number {

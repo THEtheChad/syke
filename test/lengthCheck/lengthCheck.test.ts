@@ -46,9 +46,19 @@ describe.each(runtimes)('LengthCheck (%s)', (runtime) => {
     expect(() => new LengthCheck({ max: 1.5 })).toThrow(RangeError)
     expect(() => new LengthCheck({ min: 10, max: 5 })).toThrow(/allows no length/)
     expect(() => new LengthCheck({ expected: 10, max: 5 })).toThrow(/allows no length/)
-    // Past 2^53 integers stop being exact, so byte counts couldn't be compared.
-    expect(() => new LengthCheck({ max: 2 ** 53 })).toThrow(RangeError)
-    expect(() => new LengthCheck({ max: Number.MAX_SAFE_INTEGER })).not.toThrow()
+    expect(() => new LengthCheck({ max: Number.POSITIVE_INFINITY })).toThrow(/max must be a non-negative integer/)
+    expect(() => new LengthCheck({ max: Number.NaN })).toThrow(RangeError)
+  })
+
+  it.each([Number.MAX_SAFE_INTEGER, 2 ** 53, 2 ** 60, Number.MAX_VALUE])('takes max: %d as unlimited', async (max) => {
+    const check = new LengthCheck({ max })
+    expect((await runBytes(check, chunk(data, 999))).equals(data)).toBe(true)
+    expect(check.bytes).toBe(data.length)
+  })
+
+  it('fails a short stream against a huge expected length', async () => {
+    const error = await run(new LengthCheck({ expected: 2 ** 60 }), [data]).catch((e) => e)
+    expect(error).toMatchObject({ code: 'ERR_SYKE_LENGTH', bytes: data.length })
   })
 
   it('accepts a Uint8Array from another realm', async () => {
