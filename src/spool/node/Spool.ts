@@ -612,8 +612,10 @@ export class Spool extends Duplex {
     }
     if (this.#memory.length > 0) return
 
+    // No read is in flight (checked above), and `#flushing` keeps a nested
+    // flush from starting one in the meantime.
     if (!this.#extents.empty) {
-      if (this.#wantsData && !this.#reading) this.#readFromDisk()
+      if (this.#wantsData) this.#readFromDisk()
       return
     }
 
