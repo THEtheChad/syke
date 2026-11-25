@@ -7,7 +7,18 @@ import { fork as nodeFork, Spool } from '../../src/node.ts'
 import { fork as webFork } from '../../src/web.ts'
 import { pick, runtimes } from '../harness.ts'
 import { useTempDir } from '../nodeHelpers.ts'
-import { collect, collectSettled, generator, probe, reader, readUpTo, settle } from '../streamHarness.ts'
+import {
+  collect,
+  collectSettled,
+  endedSource,
+  endedSourceKinds,
+  generator,
+  probe,
+  reader,
+  readUpTo,
+  settle,
+  staysOpenAtEnd,
+} from '../streamHarness.ts'
 
 describe.each(runtimes)('fork (%s)', (runtime) => {
   const fork = pick(runtime, { node: nodeFork, web: webFork }) as (source: unknown, options?: any) => any[]
@@ -421,5 +432,36 @@ describe('fork (node)', () => {
     const [fast, slow] = nodeFork(source.stream, { buffer: () => new Spool({ dir: tmp.path, minFreeSpace: false }) })
     expect(Buffer.concat(await collect<Buffer>(fast))).toHaveLength(64 * data.length)
     expect(Buffer.concat(await collect<Buffer>(slow))).toHaveLength(64 * data.length)
+  })
+
+  // Stopped from the source's own 'end' listener, which runs before fork
+  // hears of the end.
+  describe.each(endedSourceKinds)('with a %s that has ended', (kind) => {
+    // Some Node releases destroy a half-open Duplex themselves at its end.
+    const test = it.skipIf(!staysOpenAtEnd[kind])
+
+    test('leaves it undestroyed when every branch is destroyed', async () => {
+      const source = endedSource(kind)
+      const branches = nodeFork(source.stream)
+      source.stream.once('end', () => {
+        for (const branch of branches) branch.destroy()
+      })
+      await Promise.all(branches.map((branch) => collectSettled(branch)))
+      await settle()
+      expect(source.alive()).toBe(true)
+      source.stream.destroy()
+    })
+
+    test('leaves it undestroyed when every buffered branch is destroyed', async () => {
+      const source = endedSource(kind)
+      const branches = nodeFork(source.stream, { buffer: () => new PassThrough() })
+      source.stream.once('end', () => {
+        for (const branch of branches) branch.destroy()
+      })
+      await Promise.all(branches.map((branch) => collectSettled(branch)))
+      await settle()
+      expect(source.alive()).toBe(true)
+      source.stream.destroy()
+    })
   })
 })

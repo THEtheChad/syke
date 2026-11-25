@@ -1,8 +1,22 @@
-import { describe, expect, it } from 'vitest'
 import { merge as nodeMerge } from '../../src/node.ts'
 import { merge as webMerge } from '../../src/web.ts'
 import { pick, runtimes } from '../harness.ts'
-import { bystanders, collect, collectSettled, generator, probe, reader, readUpTo, settle, untouched } from '../streamHarness.ts'
+import { Readable } from 'node:stream'
+import { describe, expect, it } from 'vitest'
+import {
+  bystanders,
+  collect,
+  collectSettled,
+  endedSource,
+  endedSourceKinds,
+  generator,
+  probe,
+  reader,
+  readUpTo,
+  settle,
+  staysOpenAtEnd,
+  untouched,
+} from '../streamHarness.ts'
 
 describe.each(runtimes)('merge (%s)', (runtime) => {
   const merge = pick(runtime, { node: nodeMerge, web: webMerge }) as (sources: unknown) => any
@@ -180,6 +194,37 @@ describe('merge (node)', () => {
     const output = nodeMerge([[Buffer.from('a')]])
     expect(output.readableObjectMode).toBe(true)
     expect(await collect(output)).toEqual([Buffer.from('a')])
+  })
+
+  // Stopped from the source's own 'end' listener, which runs before merge
+  // hears of the end: the source has ended, but its lane hasn't been taken.
+  describe.each(endedSourceKinds)('with a %s that has ended', (kind) => {
+    // Some Node releases destroy a half-open Duplex themselves at its end.
+    const test = it.skipIf(!staysOpenAtEnd[kind])
+
+    test('leaves it undestroyed when another source fails', async () => {
+      const source = endedSource(kind)
+      const sibling = new Readable({ objectMode: true, read() {} })
+      const boom = new Error('sibling failed')
+      source.stream.once('end', () => sibling.destroy(boom))
+      const { error } = await collectSettled(nodeMerge([source.stream, sibling]))
+      expect(error).toBe(boom)
+      await settle()
+      expect(source.alive()).toBe(true)
+      source.stream.destroy()
+    })
+
+    test('leaves it undestroyed when the output is destroyed', async () => {
+      const source = endedSource(kind)
+      const sibling = new Readable({ objectMode: true, read() {} })
+      const output = nodeMerge([source.stream, sibling])
+      source.stream.once('end', () => output.destroy())
+      await collectSettled(output)
+      await settle()
+      expect(sibling.destroyed).toBe(true)
+      expect(source.alive()).toBe(true)
+      source.stream.destroy()
+    })
   })
 })
 

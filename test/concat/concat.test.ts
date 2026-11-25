@@ -1,8 +1,22 @@
+import { Readable } from 'node:stream'
 import { describe, expect, it } from 'vitest'
 import { concat as nodeConcat } from '../../src/node.ts'
 import { concat as webConcat } from '../../src/web.ts'
 import { pick, runtimes } from '../harness.ts'
-import { bystanders, collect, collectSettled, generator, probe, reader, readUpTo, settle, untouched } from '../streamHarness.ts'
+import {
+  bystanders,
+  collect,
+  collectSettled,
+  endedSource,
+  endedSourceKinds,
+  generator,
+  probe,
+  reader,
+  readUpTo,
+  settle,
+  staysOpenAtEnd,
+  untouched,
+} from '../streamHarness.ts'
 
 describe.each(runtimes)('concat (%s)', (runtime) => {
   const concat = pick(runtime, { node: nodeConcat, web: webConcat }) as (sources: unknown) => any
@@ -258,6 +272,48 @@ describe('concat (node)', () => {
     const output = nodeConcat([[Buffer.from('a')], ['b']])
     expect(output.readableObjectMode).toBe(true)
     expect(await collect(output)).toEqual([Buffer.from('a'), 'b'])
+  })
+
+  // Stopped from the source's own 'end' listener, which runs before concat
+  // hears of the end: the source has ended, but is still the current one.
+  describe.each(endedSourceKinds)('with a %s that has ended', (kind) => {
+    // Some Node releases destroy a half-open Duplex themselves at its end.
+    const test = it.skipIf(!staysOpenAtEnd[kind])
+
+    test('leaves it undestroyed when a waiting source fails', async () => {
+      const source = endedSource(kind)
+      const waiting = new Readable({ objectMode: true, read() {} })
+      const boom = new Error('waiting source failed')
+      source.stream.once('end', () => waiting.destroy(boom))
+      const { error } = await collectSettled(nodeConcat([source.stream, waiting]))
+      expect(error).toBe(boom)
+      await settle()
+      expect(source.alive()).toBe(true)
+      source.stream.destroy()
+    })
+
+    test('leaves it undestroyed when the output is destroyed', async () => {
+      const source = endedSource(kind)
+      const waiting = new Readable({ objectMode: true, read() {} })
+      const output = nodeConcat([source.stream, waiting])
+      source.stream.once('end', () => output.destroy())
+      await collectSettled(output)
+      await settle()
+      expect(waiting.destroyed).toBe(true)
+      expect(source.alive()).toBe(true)
+      source.stream.destroy()
+    })
+
+    test('leaves alone a source that had already ended when it was passed in', async () => {
+      const source = endedSource(kind)
+      await collect(source.stream)
+      const output = nodeConcat([[1], source.stream])
+      const r = reader(output)
+      expect(await readUpTo(r, 1)).toEqual([1])
+      await r.cancel()
+      expect(source.alive()).toBe(true)
+      source.stream.destroy()
+    })
   })
 })
 
