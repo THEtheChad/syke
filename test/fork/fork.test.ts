@@ -182,17 +182,32 @@ describe.each(runtimes)('fork (%s)', (runtime) => {
     expect(first.state.released).toBe(true)
   })
 
-  it('releases the buffers when the source cannot be opened', async () => {
+  it('rejects a locked ReadableStream before making any buffer', () => {
     const locked = new ReadableStream()
     locked.getReader()
+    const buffer = vi.fn(roomy(1))
+    expect(() => fork(locked, { buffer })).toThrow(/syke: source is a locked ReadableStream/)
+    expect(buffer).not.toHaveBeenCalled()
+  })
+
+  it('releases the buffers when the source cannot be opened', async () => {
+    const error = new Error('no iterator')
+    const broken = {
+      [Symbol.iterator]() {
+        throw error
+      },
+    }
     const made = [tracked(), tracked()]
     let i = 0
-    expect(() => fork(locked, { buffer: () => made[i++]!.make() })).toThrow(TypeError)
+    expect(() => fork(broken, { buffer: () => made[i++]!.make() })).toThrow(error)
     await settle()
     expect(made.map((m) => m.state.released)).toEqual([true, true])
   })
 
-  it('forwards the last branch\'s cancel reason to the source', async () => {
+  it.each([
+    ['', undefined],
+    [', through a buffer', roomy(4)],
+  ])('forwards the last branch\'s cancel reason to the source%s', async (_, buffer) => {
     const reasons: unknown[] = []
     let i = 0
     const source = new ReadableStream({
@@ -203,7 +218,7 @@ describe.each(runtimes)('fork (%s)', (runtime) => {
         reasons.push(reason)
       },
     })
-    const [a, b] = fork(source)
+    const [a, b] = fork(source, { buffer })
     const readerA = reader(a)
     const readerB = reader(b)
     await Promise.all([readUpTo(readerA, 1), readUpTo(readerB, 1)])
@@ -242,8 +257,10 @@ describe.each(runtimes)('fork (%s)', (runtime) => {
 describe('ForkCore', () => {
   const outlet = () => ({ push: vi.fn(), end: vi.fn(), error: vi.fn() }) satisfies Outlet<unknown>
   /** A source that never produces anything. */
-  const idle = (): Puller<unknown> => ({ next: () => new Promise(() => {}), cancel: () => {} })
+  const idle = (): Puller<unknown> => ({ next: () => new Promise(() => {}), cancel: () => {}, release: () => {} })
 
+  // Not reachable through fork(), which starts every branch at once; this
+  // checks the core keeps its side of the Producer contract anyway.
   it('errors a branch that starts after the source failed', () => {
     const error = new Error('early')
     const core = new ForkCore((onError) => {
@@ -354,10 +371,28 @@ describe('fork (node)', () => {
     for (const result of [resultA, resultB]) {
       expect(result.error).toBeInstanceOf(TypeError)
       expect(result.error.message).toMatch(/syke: a source produced null/)
+      expect(result.error.code).toBe('ERR_STREAM_NULL_VALUES')
       expect(result.output).toEqual([0, 1])
     }
     await settle()
     expect(source.returned).toBe(true)
+  })
+
+  it('reads nothing past a null chunk', async () => {
+    let reads = 0
+    const source = {
+      [Symbol.iterator]: () => ({
+        next: () => {
+          reads++
+          return { done: false, value: reads === 3 ? null : reads }
+        },
+      }),
+    }
+    const [a, b, c] = nodeFork(source, { count: 3 })
+    const results = await Promise.all([collectSettled(a), collectSettled(b), collectSettled(c)])
+    for (const result of results) expect(result.error?.code).toBe('ERR_STREAM_NULL_VALUES')
+    await settle()
+    expect(reads).toBe(3)
   })
 
   it('errors the branches with an Error when the source fails with a falsy value', async () => {

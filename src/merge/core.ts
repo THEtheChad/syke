@@ -51,8 +51,9 @@ export class MergeCore<S> implements Producer<unknown> {
       try {
         for (const source of list) this.#add(source)
       } catch (error) {
-        // A later source failed to open (a locked ReadableStream, say): release the earlier ones.
-        for (const lane of this.#lanes) lane.cancel(error)
+        // A later source failed to open (the same ReadableStream twice, say):
+        // hand the earlier ones back untouched, as if we'd never seen them.
+        for (const lane of this.#lanes) lane.release()
         this.#lanes.clear()
         throw error
       }

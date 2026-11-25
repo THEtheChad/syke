@@ -71,10 +71,17 @@ mutate one.
 
 ## Errors and cancellation
 
-- A source error errors every branch with that error.
+- A source error errors every branch with that error. In `syke/node` that
+  includes a branch made with `buffer`: its error is emitted like any stream's,
+  so a branch used with `.pipe()` and no `'error'` listener crashes the
+  process, as an unhandled stream error does. Use `pipeline()` or add a
+  listener. (Before 0.1.1, such a branch silently ended early instead.)
 - Cancelling (web) or destroying (Node) one branch detaches only that branch;
   the others carry on, no longer held back by it.
 - Once every branch is gone, the source is cancelled (web) or destroyed (Node).
 - In `syke/node`, a source yielding `null` errors every branch with a `TypeError`
-  (Node streams treat `null` as end-of-stream) instead of ending early.
-- Invalid options throw a `TypeError` or `RangeError` from `fork()`.
+  whose `code` is `'ERR_STREAM_NULL_VALUES'` (Node streams treat `null` as
+  end-of-stream). Before 0.1.1, every branch silently ended there instead.
+- Invalid options, or an invalid source (including a locked `ReadableStream`),
+  throw a `TypeError` or `RangeError` from `fork()`, before any `buffer` is
+  made.

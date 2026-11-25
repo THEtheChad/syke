@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { concat as nodeConcat } from '../../src/node.ts'
 import { concat as webConcat } from '../../src/web.ts'
 import { pick, runtimes } from '../harness.ts'
-import { collect, collectSettled, generator, probe, reader, readUpTo, settle } from '../streamHarness.ts'
+import { bystanders, collect, collectSettled, generator, probe, reader, readUpTo, settle, untouched } from '../streamHarness.ts'
 
 describe.each(runtimes)('concat (%s)', (runtime) => {
   const concat = pick(runtime, { node: nodeConcat, web: webConcat }) as (sources: unknown) => any
@@ -134,24 +134,37 @@ describe.each(runtimes)('concat (%s)', (runtime) => {
     expect(sources.returned).toBe(true)
   })
 
-  it('releases the array\'s earlier sources when a later one cannot be opened', async () => {
-    const first = probe(runtime)
+  it('rejects a locked ReadableStream before opening anything, leaving the other sources untouched', async () => {
+    const b = bystanders()
     const locked = new ReadableStream()
     locked.getReader()
-    expect(() => concat([first.stream, locked])).toThrow(TypeError)
-    await settle()
-    expect(first.cancelled).toBe(true)
+    expect(() => concat([...b.sources, () => ['lazy'], locked])).toThrow(/syke: source is a locked ReadableStream/)
+    expect(await b.state()).toEqual(untouched)
+  })
 
-    const second = probe(runtime)
+  it('hands the other sources back untouched when one cannot be opened', async () => {
+    // The same stream twice: the second getReader() throws.
+    const b = bystanders()
+    const twice = new ReadableStream({
+      start(controller) {
+        controller.enqueue('t')
+        controller.close()
+      },
+    })
+    expect(() => concat([...b.sources, () => ['lazy'], twice, twice])).toThrow(TypeError)
+    expect(await b.state()).toEqual(untouched)
+    expect(await collect(twice)).toEqual(['t'])
+
+    // An iterable whose iterator can't be made.
     const error = new Error('no iterator')
     const broken = {
       [Symbol.iterator]() {
         throw error
       },
     }
-    expect(() => concat([second.stream, () => ['lazy'], broken])).toThrow(error)
-    await settle()
-    expect(second.cancelled).toBe(true)
+    const c = bystanders()
+    expect(() => concat([...c.sources, () => ['lazy'], broken])).toThrow(error)
+    expect(await c.state()).toEqual(untouched)
   })
 
   it('takes the items of a non-array iterable as they are reached, not up front', async () => {
@@ -222,6 +235,7 @@ describe('concat (node)', () => {
     expect(output).toEqual([0, 1])
     expect(error).toBeInstanceOf(TypeError)
     expect(error.message).toMatch(/syke: a source produced null/)
+    expect(error.code).toBe('ERR_STREAM_NULL_VALUES')
     await settle()
     expect(source.returned).toBe(true)
   })

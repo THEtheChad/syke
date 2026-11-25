@@ -16,6 +16,12 @@ export interface Puller<T> {
   next(): Promise<IteratorResult<T, undefined>>
   /** Stops the source early (cancel or destroy). Safe while `next()` is pending, and idempotent. */
   cancel(reason?: unknown): void
+  /**
+   * Stops watching the source without stopping it, handing it back to the
+   * caller as it was: unlocked, with no listeners of ours, not closed. Only
+   * valid before the first `next()`.
+   */
+  release(): void
 }
 
 /** Called once if a source fails, even while nobody is reading it. */
@@ -68,13 +74,22 @@ export function iterablePuller<T>(source: Iterable<T> | AsyncIterable<T>): Pulle
         // A throwing return() has nothing left for us to clean up.
       }
     },
+    release() {
+      // Nothing was read, and the iterator may be the caller's own (a
+      // generator object is its own iterator), so it's left open.
+      done = true
+    },
   }
 }
 
 /** A `Puller` over a web `ReadableStream` (anything with `getReader()`). */
 export function readerPuller<T>(stream: ReadableStream<T>, onError: OnError): Puller<T> {
   const reader = stream.getReader()
-  reader.closed.then(noop, onError)
+  let released = false
+  // releaseLock() rejects `closed` too, which isn't the source failing.
+  reader.closed.then(noop, (error) => {
+    if (!released) onError(error)
+  })
   return {
     async next() {
       const result = await reader.read()
@@ -82,6 +97,10 @@ export function readerPuller<T>(stream: ReadableStream<T>, onError: OnError): Pu
     },
     cancel(reason) {
       reader.cancel(reason).catch(noop)
+    },
+    release() {
+      released = true
+      reader.releaseLock()
     },
   }
 }
@@ -107,7 +126,8 @@ export function isReadableStream(value: unknown): value is ReadableStream {
 /**
  * Checks `source` is a stream or an iterable of chunks. A string or byte
  * array is iterable too, but almost certainly meant as one chunk, and the
- * runtimes disagree on how to read one, so it's refused.
+ * runtimes disagree on how to read one, so it's refused. So is a locked
+ * `ReadableStream`, which can't be read.
  */
 export function assertSource(source: unknown, name = 'source'): void {
   if (typeof source === 'string' || ArrayBuffer.isView(source)) {
@@ -119,6 +139,9 @@ export function assertSource(source: unknown, name = 'source'): void {
     !(isAsyncIterable(source) || isIterable(source) || isReadableStream(source))
   ) {
     throw new TypeError(`syke: ${name} must be a stream or an iterable of chunks, got ${describe(source)}`)
+  }
+  if (isReadableStream(source) && source.locked) {
+    throw new TypeError(`syke: ${name} is a locked ReadableStream; something else is already reading it`)
   }
 }
 
